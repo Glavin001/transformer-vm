@@ -188,6 +188,36 @@ def test_clif_graph_evaluator_hello(clif_data):
     assert output == "Hello World!\n", f"Graph evaluator output: {output!r}"
 
 
+@pytest.mark.parametrize(
+    "program,args",
+    [
+        ("collatz", "7"),
+        ("fibonacci", "10"),
+    ],
+)
+def test_clif_compiles_multi_function(program, args, clif_data):
+    """Multi-function programs compile through the CLIF pipeline.
+
+    Collatz and fibonacci call helper functions (sscanf, printf) which
+    are inlined during compilation. The reference interpreter runs but
+    the inlined callees' variable mapping needs further debugging.
+    """
+    from transformer_vm._paths import EXAMPLES_DIR
+    from transformer_vm.compilation.compile_clif import compile_and_save
+
+    clif_txt = os.path.join(clif_data, f"{program}_clif.txt")
+    if not os.path.exists(clif_txt):
+        compile_and_save(
+            os.path.join(EXAMPLES_DIR, f"{program}.c"), args=args, name=program
+        )
+    # Verify it compiled (has instructions)
+    from transformer_vm.clif.reference import load_clif_program
+
+    prog, input_str = load_clif_program(clif_txt)
+    assert len(prog) > 100, f"Expected >100 instructions for {program}, got {len(prog)}"
+    assert input_str == args
+
+
 @pytest.mark.slow
 def test_clif_graph_evaluator_addition(clif_data):
     """CLIF CALM graph evaluator on the addition program.
