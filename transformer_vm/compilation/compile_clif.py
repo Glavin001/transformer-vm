@@ -227,8 +227,9 @@ def _encode_instr(instr: SimpleInstr) -> list[int]:
         return [v(instr.dest), v(instr.src1), lo(imm), hi(imm), (imm >> 16) & 0xFF, (imm >> 24) & 0xFF]
 
     if op == "input_base":
+        # f0=0(no dest), f1:f4=immediate (same layout as iconst for immediate field)
         imm = instr.imm & MASK32
-        return [lo(imm), hi(imm), (imm >> 16) & 0xFF, (imm >> 24) & 0xFF, 0, 0]
+        return [0, lo(imm), hi(imm), (imm >> 16) & 0xFF, (imm >> 24) & 0xFF, 0]
 
     if op in ("halt", "return", "call"):
         return [0, 0, 0, 0, 0, 0]

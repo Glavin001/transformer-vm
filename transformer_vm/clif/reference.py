@@ -186,7 +186,8 @@ def _decode_instr(op, data):
         else:
             d["imm"] = data[2] | (data[3] << 8) | (data[4] << 16) | (data[5] << 24)
     elif op == "input_base":
-        d["imm"] = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24)
+        # f0=0, f1:f4=immediate (same layout as iconst)
+        d["imm"] = data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24)
 
     return d
 

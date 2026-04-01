@@ -321,6 +321,8 @@ def build(program=None):
     )
 
     # Reconstruct full 32-bit src values for comparisons and memory access
+    # Note: query index i matches write byte_index=i, which contains byte (i-1) of the value.
+    # Byte (i-1) has weight 2^(8*(i-1)) in little-endian reconstruction.
     src1_bytes = [
         fetch(
             byte_number - 1,
@@ -331,7 +333,7 @@ def build(program=None):
         for i in range(1, 5)
     ]
     src1_value = persist(sum(
-        (1 << (8 * (4 - i))) * src1_bytes[i - 1] for i in range(1, 5)
+        (1 << (8 * (i - 1))) * src1_bytes[i - 1] for i in range(1, 5)
     ))
 
     src2_bytes = [
@@ -344,18 +346,25 @@ def build(program=None):
         for i in range(1, 5)
     ]
     src2_value = persist(sum(
-        (1 << (8 * (4 - i))) * src2_bytes[i - 1] for i in range(1, 5)
+        (1 << (8 * (i - 1))) * src2_bytes[i - 1] for i in range(1, 5)
     ))
 
     # ── Memory access ────────────────────────────────────────────
-    # Memory uses latest-write-wins keyed by address
-    # For load: f0=dest, f1=addr, f2:f3=offset → addr=src1_value, offset=field[2:3]
-    # For store: f0=0, f1=val, f2=addr, f3:f4=offset → addr=src2_value, offset=field[3:4]
-    # Use src1_value for load address and src2_value for store address
+    # Memory uses latest-write-wins keyed by address.
+    # For load: addr = src1_value + load_offset
+    # For store: addr = src2_value + store_offset
+    # For input_base: addr = immediate (the input buffer base address)
     memory_load_offset = field_bytes[2] + 256 * field_bytes[3]
     memory_store_offset = field_bytes[3] + 256 * field_bytes[4]
+
+    # input_base uses immediate as write address base (not src2_value)
+    input_base_gate = is_op("input_base")
+    memory_write_base = persist(
+        reglu(src2_value + memory_store_offset, 1 - input_base_gate)
+        + reglu(immediate, input_base_gate)
+    )
     memory_read_address = src1_value + memory_load_offset + byte_index
-    memory_write_address = src2_value + memory_store_offset + byte_index - 1
+    memory_write_address = memory_write_base + byte_index - 1
     memory_write_gate = persist(
         is_op("store") + is_op("store8") + is_op("store16") + is_op("input_base")
     )
