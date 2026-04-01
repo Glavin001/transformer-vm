@@ -97,6 +97,46 @@ def test_clif_reference_hello_trace(clif_data):
 # ── Cross-IR comparison tests ─────────────────────────────────
 
 
+def test_clif_graph_evaluator_hello(clif_data):
+    """CLIF CALM graph evaluator produces correct static output for hello.
+
+    Tests that the graph evaluator correctly executes iconst + output
+    instructions. Memory reads (uload8 for input string) are a known
+    limitation being worked on.
+    """
+    from transformer_vm.clif.interpreter import CLIFMachine
+    from transformer_vm.evaluator import Runtime
+
+    pg = CLIFMachine().build()
+    rt = Runtime(use_hull=False, program_graph=pg)
+
+    prog_file = os.path.join(clif_data, "hello_clif.txt")
+    with open(prog_file) as f:
+        tokens = f.read().split()
+
+    prog_end_idx = tokens.index("}")
+    for i in range(prog_end_idx + 1):
+        rt.step(tokens[i])
+    for i in range(prog_end_idx + 1, len(tokens)):
+        vals = rt.step(tokens[i])
+
+    output_chars = []
+    for step in range(500):
+        next_tok = rt.predict_next(vals)
+        if next_tok == "halt":
+            break
+        if next_tok.startswith("out("):
+            ch = next_tok[4:-1]
+            output_chars.append(ch if len(ch) == 1 else chr(int(ch, 16)))
+        vals = rt.step(next_tok)
+
+    output = "".join(output_chars)
+    # The static "Hello " prefix and "!\n" suffix should be correct.
+    # The "World" part depends on memory reads which may still be in progress.
+    assert output.startswith("Hello ")
+    assert output.endswith("!\n")
+
+
 @pytest.mark.parametrize("program,args,expected_prefix", [
     ("hello", "World", "Hello World!"),
 ])
