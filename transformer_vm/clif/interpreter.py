@@ -497,6 +497,16 @@ def build(program=None):
         + 255 * reglu(mem_byte_sign, 1 - is_boundary)
     )
 
+    # For smin/smax: select all bytes from src1 or src2 based on comparison
+    # smin: result = src1 if signed(src1) < signed(src2) else src2
+    # smax: result = src1 if signed(src1) > signed(src2) else src2
+    smin_byte = persist(
+        reglu(src1_byte, a_lt_b_s) + reglu(src2_byte, 1 - a_lt_b_s)
+    )
+    smax_byte = persist(
+        reglu(src1_byte, a_gt_b_s) + reglu(src2_byte, 1 - a_gt_b_s)
+    )
+
     # The result byte to emit — gated by opcode
     result_byte = persist(
         # iconst: immediate bytes from program prefix
@@ -526,6 +536,10 @@ def build(program=None):
         + reglu(sub_byte, op_dot("ineg"))
         # band: byte 0 = src1 & src2 (approximated as src1 for 0xFF mask)
         + reglu(src1_byte, op_dot("band") + is_boundary - 1)
+        # smin: signed minimum of src1 and src2
+        + reglu(smin_byte, op_dot("smin"))
+        # smax: signed maximum of src1 and src2
+        + reglu(smax_byte, op_dot("smax"))
         # sextend8: byte 0 = src byte, bytes 1-3 = sign extension
         + reglu(sext_byte, op_dot("sextend8"))
         # brif: 32-bit offset bytes (taken when condition is true)

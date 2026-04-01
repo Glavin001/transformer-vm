@@ -1,6 +1,12 @@
 programs:
   - name: hello
     args: "World"
+  - name: countdown
+    args: ""
+  - name: minmax
+    args: "HELLO"
+  - name: reverse
+    args: "abcde"
   - name: addition
     args: "12345+6789"
   - name: collatz
