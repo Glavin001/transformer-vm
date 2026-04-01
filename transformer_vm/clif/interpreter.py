@@ -293,55 +293,69 @@ def build(program=None):
     )
     immediate = persist(immediate)
 
-    # ── Variable access via attention ────────────────────────────
-    # Variables are stored keyed by (dest_v * 4 + byte_index)
-    # Read: query with (src_v * 4 + byte_index)
-    not_var_write = 1 - var_write + is_boundary  # Clear key when not writing a var
+    # ── Variable access via per-byte attention ──────────────────
+    # Each byte token during a variable-write instruction writes its value
+    # keyed by (dest_v, byte_index). Boundary/commit positions clear the key.
+    #
+    # Key: 4 * (fetched_dest_v + 1) + byte_index   (at byte positions)
+    # Query: 4 * (fetched_src_v + 1) + byte_index   (at any position)
+    # Clear: at boundaries (byte_number = 0) — commits, out(), branch_taken, etc.
 
-    # var_write_key used for writing results
-    var_write_key = 4 * fetched_dest_v + byte_index
+    # Use (dest_v + 1) to avoid key=0 conflicts
+    var_write_key = 4 * (fetched_dest_v + 1) + byte_index
+    # Clear key at non-byte positions (boundaries, commits, etc.)
+    clear_at_boundary = is_boundary
 
-    # Read src1 and src2 values from the trace
     src1_byte = fetch(
         byte_number - 1,
-        query=4 * fetched_src1_v + byte_index + 1,
+        query=4 * (fetched_src1_v + 1) + byte_index + 1,
         key=var_write_key,
-        clear_key=not_var_write,
+        clear_key=clear_at_boundary,
     )
 
     src2_byte = fetch(
         byte_number - 1,
-        query=4 * fetched_src2_v + byte_index + 1,
+        query=4 * (fetched_src2_v + 1) + byte_index + 1,
         key=var_write_key,
-        clear_key=not_var_write,
+        clear_key=clear_at_boundary,
     )
 
-    # Reconstruct full 32-bit src1/src2 values
-    src1_value = persist(sum(
-        (1 << (8 * (4 - i))) * fetch(
+    # Reconstruct full 32-bit src values for comparisons and memory access
+    src1_bytes = [
+        fetch(
             byte_number - 1,
-            query=4 * fetched_src1_v + i,
+            query=4 * (fetched_src1_v + 1) + i,
             key=var_write_key,
-            clear_key=not_var_write,
+            clear_key=clear_at_boundary,
         )
         for i in range(1, 5)
+    ]
+    src1_value = persist(sum(
+        (1 << (8 * (4 - i))) * src1_bytes[i - 1] for i in range(1, 5)
     ))
 
-    src2_value = persist(sum(
-        (1 << (8 * (4 - i))) * fetch(
+    src2_bytes = [
+        fetch(
             byte_number - 1,
-            query=4 * fetched_src2_v + i,
+            query=4 * (fetched_src2_v + 1) + i,
             key=var_write_key,
-            clear_key=not_var_write,
+            clear_key=clear_at_boundary,
         )
         for i in range(1, 5)
+    ]
+    src2_value = persist(sum(
+        (1 << (8 * (4 - i))) * src2_bytes[i - 1] for i in range(1, 5)
     ))
 
     # ── Memory access ────────────────────────────────────────────
     # Memory uses latest-write-wins keyed by address
-    memory_offset = field_bytes[2] + 256 * field_bytes[3]
-    memory_read_address = src1_value + memory_offset + byte_index
-    memory_write_address = src2_value + memory_offset + byte_index - 1
+    # For load: f0=dest, f1=addr, f2:f3=offset → addr=src1_value, offset=field[2:3]
+    # For store: f0=0, f1=val, f2=addr, f3:f4=offset → addr=src2_value, offset=field[3:4]
+    # Use src1_value for load address and src2_value for store address
+    memory_load_offset = field_bytes[2] + 256 * field_bytes[3]
+    memory_store_offset = field_bytes[3] + 256 * field_bytes[4]
+    memory_read_address = src1_value + memory_load_offset + byte_index
+    memory_write_address = src2_value + memory_store_offset + byte_index - 1
     memory_write_gate = persist(
         is_op("store") + is_op("store8") + is_op("store16") + is_op("input_base")
     )
@@ -412,12 +426,15 @@ def build(program=None):
     cond_nonzero = stepglu(one, src1_value - 1)
 
     # ── Top byte (used for stores and output) ────────────────────
-    # For store: the value to store comes from src1 (first operand)
-    top_byte = fetch(
+    # For output/store: the value comes from src1 (field_bytes[1])
+    top_byte = src1_byte
+
+    # src3 for select (third operand = false_val from field_bytes[3])
+    src3_byte = fetch(
         byte_number - 1,
-        query=4 * field_bytes[0] + byte_index + 1,  # src1 for store
+        query=4 * (field_bytes[3] + 1) + byte_index + 1,
         key=var_write_key,
-        clear_key=not_var_write,
+        clear_key=clear_at_boundary,
     )
 
     # ── Result byte computation ──────────────────────────────────
@@ -427,14 +444,6 @@ def build(program=None):
     # Immediate bytes are at instruction_position + 2 + byte_index
     const_byte = fetch(
         byte_number - 1, query=instruction_position + byte_index + 2, key=position
-    )
-
-    # select: false_val from third source (field[3])
-    src3_byte = fetch(
-        byte_number - 1,
-        query=4 * field_bytes[3] + byte_index + 1,
-        key=var_write_key,
-        clear_key=not_var_write,
     )
 
     # The result byte to emit — gated by opcode

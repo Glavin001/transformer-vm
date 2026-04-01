@@ -194,23 +194,28 @@ def _encode_instr(instr: SimpleInstr) -> list[int]:
         return [v(instr.dest), v(instr.src1), lo(off), hi(off), 0, 0]
 
     if op in ("store", "store8", "store16"):
+        # f0=0(no dest), f1=val(src1), f2=addr(src2), f3:f4=offset
         off = instr.imm & 0xFFFF
-        return [v(instr.src1), v(instr.src2), lo(off), hi(off), 0, 0]
+        return [0, v(instr.src1), v(instr.src2), lo(off), hi(off), 0]
 
     if op == "brif":
+        # f0=0, f1=cond(src1), f2:f3=true_offset, f4:f5=false_offset
         t = signed_16(instr.imm)
         f = signed_16(instr.false_offset)
-        return [v(instr.src1), lo(t), hi(t), lo(f), hi(f), 0]
+        return [0, v(instr.src1), lo(t), hi(t), lo(f), hi(f)]
 
     if op == "jump":
+        # f0:f1=offset, rest=0
         t = signed_16(instr.imm)
         return [lo(t), hi(t), 0, 0, 0, 0]
 
     if op in ("copy", "copy_true", "copy_false"):
+        # f0=dest, f1=src, f2=cond(for _true/_false)
         return [v(instr.dest), v(instr.src1), v(instr.src2), 0, 0, 0]
 
     if op == "output":
-        return [v(instr.src1), 0, 0, 0, 0, 0]
+        # f0=0(no dest), f1=src
+        return [0, v(instr.src1), 0, 0, 0, 0]
 
     if op in ("ineg", "sextend8"):
         return [v(instr.dest), v(instr.src1), 0, 0, 0, 0]

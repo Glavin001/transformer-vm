@@ -144,16 +144,18 @@ def _decode_instr(op, data):
         d["addr"] = data[1]
         d["offset"] = data[2] | (data[3] << 8)
     elif op in ("store", "store8", "store16"):
-        d["val"] = data[0]
-        d["addr"] = data[1]
-        d["offset"] = data[2] | (data[3] << 8)
+        # f0=0, f1=val, f2=addr, f3:f4=offset
+        d["val"] = data[1]
+        d["addr"] = data[2]
+        d["offset"] = data[3] | (data[4] << 8)
     elif op == "brif":
-        d["cond_var"] = data[0]
-        t = data[1] | (data[2] << 8)
+        # f0=0, f1=cond, f2:f3=true_offset, f4:f5=false_offset
+        d["cond_var"] = data[1]
+        t = data[2] | (data[3] << 8)
         if t >= 0x8000:
             t -= 0x10000
         d["true_offset"] = t
-        f = data[3] | (data[4] << 8)
+        f = data[4] | (data[5] << 8)
         if f >= 0x8000:
             f -= 0x10000
         d["false_offset"] = f
@@ -166,11 +168,12 @@ def _decode_instr(op, data):
         d["dest"] = data[0]
         d["src"] = data[1]
         d["cond_var"] = data[2]
-    elif op in ("output", "ineg", "sextend8"):
-        d["src"] = data[0]
-        if op in ("ineg", "sextend8"):
-            d["dest"] = data[0]
-            d["src"] = data[1]
+    elif op == "output":
+        # f0=0, f1=src
+        d["src"] = data[1]
+    elif op in ("ineg", "sextend8"):
+        d["dest"] = data[0]
+        d["src"] = data[1]
     elif op == "umulhi":
         d["dest"] = data[0]
         d["src1"] = data[1]
