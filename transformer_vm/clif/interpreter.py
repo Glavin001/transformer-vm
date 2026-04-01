@@ -293,64 +293,60 @@ def build(program=None):
     )
     immediate = persist(immediate)
 
-    # ── Variable access via per-byte attention ──────────────────
-    # Each byte token during a variable-write instruction writes its value
-    # keyed by (dest_v, byte_index). Boundary/commit positions clear the key.
+    # ── Variable access via two-step lookup ─────────────────────
     #
-    # Key: 4 * (fetched_dest_v + 1) + byte_index   (at byte positions)
-    # Query: 4 * (fetched_src_v + 1) + byte_index   (at any position)
-    # Clear: at boundaries (byte_number = 0) — commits, out(), branch_taken, etc.
+    # Mirrors WASM's stack access pattern (see wasm/interpreter.py:395-417).
+    #
+    # Step 1 (commit-level): At each commit with var_write=1, write
+    #   key = dest_v,  values = (store_value, position - 4)
+    # This records "variable dest_v has 32-bit value store_value, and
+    # its bytes start at position-4 in the trace."
+    #
+    # Step 2 (byte-level): To read a byte of a variable, query by position:
+    #   query = src_position + byte_index,  key = position
+    # This fetches the individual byte from the trace.
+    #
+    # The trick: store_value is already computed (persist from store_bytes,
+    # free). We get the full 32-bit value in ONE lookup instead of FOUR.
 
-    # Use (dest_v + 1) to avoid key=0 conflicts
-    var_write_key = 4 * (fetched_dest_v + 1) + byte_index
-    # Clear key at boundaries AND at byte positions of non-var-write instructions.
-    # This prevents branch offset bytes, store bytes, etc. from polluting the
-    # variable key space (since brif has dest_v=0 which collides with v0).
-    not_var_write_instr = 1 - fetched_var_write
-    clear_at_non_var_byte = is_boundary + not_var_write_instr
+    # At the commit position, cursor has been incremented (delta_cursor=1).
+    # So fetched_dest_v points to the NEXT instruction. We need the PREVIOUS
+    # instruction's dest_v. Compute: prev_instruction_position = 7*(cursor-1)+1
+    # = 7*cursor - 6, and field_bytes[0] is at prev_instruction_position + 1
+    # = 7*cursor - 5.
+    dest_v_at_commit = fetch(
+        byte_number - 1, query=7 * cursor - 5, key=position
+    )
 
+    not_var_write_commit = 1 - var_write  # Only active at commits with vw=1
+
+    # Step 1: commit-level lookups — get 32-bit value + position in one shot
+    src1_value, src1_position = fetch(
+        [store_value, position - 4],
+        query=fetched_src1_v,
+        key=dest_v_at_commit,
+        clear_key=not_var_write_commit,
+    )
+
+    src2_value, src2_position = fetch(
+        [store_value, position - 4],
+        query=fetched_src2_v,
+        key=dest_v_at_commit,
+        clear_key=not_var_write_commit,
+    )
+
+    # Step 2: byte-level lookups — fetch individual bytes by position
     src1_byte = fetch(
         byte_number - 1,
-        query=4 * (fetched_src1_v + 1) + byte_index + 1,
-        key=var_write_key,
-        clear_key=clear_at_non_var_byte,
+        query=src1_position + byte_index,
+        key=position,
     )
 
     src2_byte = fetch(
         byte_number - 1,
-        query=4 * (fetched_src2_v + 1) + byte_index + 1,
-        key=var_write_key,
-        clear_key=clear_at_non_var_byte,
+        query=src2_position + byte_index,
+        key=position,
     )
-
-    # Reconstruct full 32-bit src values for comparisons and memory access
-    # Note: query index i matches write byte_index=i, which contains byte (i-1) of the value.
-    # Byte (i-1) has weight 2^(8*(i-1)) in little-endian reconstruction.
-    src1_bytes = [
-        fetch(
-            byte_number - 1,
-            query=4 * (fetched_src1_v + 1) + i,
-            key=var_write_key,
-            clear_key=clear_at_non_var_byte,
-        )
-        for i in range(1, 5)
-    ]
-    src1_value = persist(sum(
-        (1 << (8 * (i - 1))) * src1_bytes[i - 1] for i in range(1, 5)
-    ))
-
-    src2_bytes = [
-        fetch(
-            byte_number - 1,
-            query=4 * (fetched_src2_v + 1) + i,
-            key=var_write_key,
-            clear_key=clear_at_non_var_byte,
-        )
-        for i in range(1, 5)
-    ]
-    src2_value = persist(sum(
-        (1 << (8 * (i - 1))) * src2_bytes[i - 1] for i in range(1, 5)
-    ))
 
     # ── Memory access ────────────────────────────────────────────
     # Memory uses latest-write-wins keyed by address.
@@ -464,11 +460,16 @@ def build(program=None):
     top_byte = src1_byte
 
     # src3 for select (third operand = false_val from field_bytes[3])
+    _src3_value, src3_position = fetch(
+        [store_value, position - 4],
+        query=field_bytes[3],
+        key=dest_v_at_commit,
+        clear_key=not_var_write_commit,
+    )
     src3_byte = fetch(
         byte_number - 1,
-        query=4 * (field_bytes[3] + 1) + byte_index + 1,
-        key=var_write_key,
-        clear_key=clear_at_non_var_byte,
+        query=src3_position + byte_index,
+        key=position,
     )
 
     # ── Result byte computation ──────────────────────────────────
