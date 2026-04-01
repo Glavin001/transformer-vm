@@ -443,21 +443,46 @@ def build(program=None):
         byte_number - 1, query=instruction_position + byte_index + 2, key=position
     )
 
-    # ── Branch offset bytes ────────────────────────────────────
-    # For brif: true offset at field_bytes[2:3], false at field_bytes[4:5]
-    # const_byte (instruction_position + byte_index + 2) gives true offset bytes
+    # ── Branch offset bytes (sign-extended from 16-bit to 32-bit) ──
+    # For brif: true offset at field_bytes[2:3] = instruction_position+3,+4
+    #           false offset at field_bytes[4:5] = instruction_position+5,+6
+    # Need +3 offset (not +2 like const_byte) so bytes align at byte_index=0
+    true_offset_byte = fetch(
+        byte_number - 1, query=instruction_position + byte_index + 3, key=position
+    )
     false_offset_byte = fetch(
-        byte_number - 1, query=instruction_position + byte_index + 4, key=position
+        byte_number - 1, query=instruction_position + byte_index + 5, key=position
     )
     # Select true or false offset based on condition
     cond_nonzero = stepglu(one, src1_value - 1)
-    branch_byte = persist(
-        reglu(const_byte, cond_nonzero) + reglu(false_offset_byte, 1 - cond_nonzero)
+    branch_byte_raw = persist(
+        reglu(true_offset_byte, cond_nonzero) + reglu(false_offset_byte, 1 - cond_nonzero)
     )
 
-    # For jump: offset at field_bytes[0:1] (instruction_position + 1, + 2)
-    jump_offset_byte = fetch(
+    # Sign-extend: bytes 3-4 should be 0xFF if offset is negative (high byte >= 0x80)
+    # The high byte of the 16-bit offset: true at field[3]=pos+4, false at field[5]=pos+6
+    true_off_hi = fetch(byte_number - 1, query=instruction_position + 4, key=position)
+    false_off_hi = fetch(byte_number - 1, query=instruction_position + 6, key=position)
+    selected_off_hi = persist(
+        reglu(true_off_hi, cond_nonzero) + reglu(false_off_hi, 1 - cond_nonzero)
+    )
+    off_sign = stepglu(one, selected_off_hi - 128)
+    # Sign-extend after 2 bytes (16-bit offset → 32-bit)
+    byte_at_2 = stepglu(one, byte_index - 2)
+    branch_byte = persist(
+        reglu(branch_byte_raw, 1 - byte_at_2)
+        + 255 * reglu(off_sign, byte_at_2)
+    )
+
+    # For jump: offset at field_bytes[0:1], sign-extended after 2 bytes
+    jump_offset_byte_raw = fetch(
         byte_number - 1, query=instruction_position + byte_index, key=position
+    )
+    jump_off_hi = fetch(byte_number - 1, query=instruction_position + 2, key=position)
+    jump_off_sign = stepglu(one, jump_off_hi - 128)
+    jump_offset_byte = persist(
+        reglu(jump_offset_byte_raw, 1 - byte_at_2)
+        + 255 * reglu(jump_off_sign, byte_at_2)
     )
 
     # ── Top byte (used for stores and output) ────────────────────
