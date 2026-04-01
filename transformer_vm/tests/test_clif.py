@@ -189,21 +189,19 @@ def test_clif_graph_evaluator_hello(clif_data):
 
 
 @pytest.mark.slow
-@pytest.mark.integration
 def test_clif_graph_evaluator_addition(clif_data):
     """CLIF CALM graph evaluator on the addition program.
 
-    Uses hull-based O(log n) attention. Addition generates ~2500 execution
+    Uses hull-based O(log n) attention. Addition generates ~2700 execution
     tokens with ~900 prefix tokens and multiple nested loops.
 
-    Note: This test exercises the full CALM interpreter on a real program
-    with complex loop structures. Currently, a sign-extension edge case
-    in the main loop back-edge (jump offset -82) prevents full completion.
-    The loops execute correctly and produce correct intermediate results.
+    Control flow (loops, branches, halt) works correctly. The program
+    halts and produces a newline at the end. The digit characters are
+    currently read as 0x00 because store8 memory writes aren't yet
+    being picked up by the load attention heads (memory write/read
+    address alignment for store8 needs debugging).
     """
-    output = _run_clif_graph_evaluator(clif_data, "addition", max_steps=20000, use_hull=True)
-    # The addition program has complex multi-loop structure.
-    # Once the jump offset sign-extension for large negative offsets is fixed,
-    # this should produce "19134\n".
-    # For now, verify the graph evaluator doesn't crash and runs to step limit.
-    assert isinstance(output, str)
+    output = _run_clif_graph_evaluator(clif_data, "addition", max_steps=5000, use_hull=True)
+    # Control flow works: program halts and emits the trailing newline.
+    # The digit outputs read 0 from memory (store8 memory write issue).
+    assert output.endswith("\n"), f"Should end with newline, got: {output!r}"
