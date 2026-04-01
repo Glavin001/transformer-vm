@@ -36,6 +36,8 @@ wasm-eval = "transformer_vm.evaluator:main"
 wasm-build = "transformer_vm.build:main"
 wasm-specialize = "transformer_vm.specialize:main"
 wasm-reference = "transformer_vm.wasm.reference:main"
+clif-compile = "transformer_vm.compilation.compile_clif:main"
+clif-reference = "transformer_vm.clif.reference:main"
 
 [build-system]
 requires = ["setuptools>=82.0.0"]
