@@ -437,6 +437,29 @@ def build(program=None):
     # Select: cond_nonzero from src1 (the condition variable)
     cond_nonzero = stepglu(one, src1_value - 1)
 
+    # ── Immediate byte (used by iconst and branch offsets) ──────
+    # iconst: immediate bytes at instruction_position + 2 + byte_index
+    const_byte = fetch(
+        byte_number - 1, query=instruction_position + byte_index + 2, key=position
+    )
+
+    # ── Branch offset bytes ────────────────────────────────────
+    # For brif: true offset at field_bytes[2:3], false at field_bytes[4:5]
+    # const_byte (instruction_position + byte_index + 2) gives true offset bytes
+    false_offset_byte = fetch(
+        byte_number - 1, query=instruction_position + byte_index + 4, key=position
+    )
+    # Select true or false offset based on condition
+    cond_nonzero = stepglu(one, src1_value - 1)
+    branch_byte = persist(
+        reglu(const_byte, cond_nonzero) + reglu(false_offset_byte, 1 - cond_nonzero)
+    )
+
+    # For jump: offset at field_bytes[0:1] (instruction_position + 1, + 2)
+    jump_offset_byte = fetch(
+        byte_number - 1, query=instruction_position + byte_index, key=position
+    )
+
     # ── Top byte (used for stores and output) ────────────────────
     # For output/store: the value comes from src1 (field_bytes[1])
     top_byte = src1_byte
@@ -451,12 +474,6 @@ def build(program=None):
 
     # ── Result byte computation ──────────────────────────────────
     is_output = is_op("output")
-
-    # iconst: fetch the immediate byte from program prefix at the right position
-    # Immediate bytes are at instruction_position + 2 + byte_index
-    const_byte = fetch(
-        byte_number - 1, query=instruction_position + byte_index + 2, key=position
-    )
 
     # ── Bitwise operations (approximate for ALM) ───────────────
     # True bitwise AND/OR/XOR can't be expressed directly in the ALM.
@@ -501,6 +518,10 @@ def build(program=None):
         + reglu(src1_byte, op_dot("band") + is_boundary - 1)
         # sextend8: byte 0 = src byte, bytes 1-3 = sign extension
         + reglu(sext_byte, op_dot("sextend8"))
+        # brif: offset bytes (true or false depending on condition)
+        + reglu(branch_byte, op_dot("brif"))
+        # jump: offset bytes
+        + reglu(jump_offset_byte, op_dot("jump"))
     )
 
     result_carry = persist(
