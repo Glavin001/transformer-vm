@@ -364,6 +364,21 @@ def _simplify_instr(
             return r
         return None
 
+    if op == "bnot":
+        # bnot v → lower to: iconst tmp=0xFFFFFFFF, bxor dest=v^tmp
+        # But bxor isn't in the ALM either. Express as: dest = -1 - v = ineg(v) - 1
+        # Which is: isub 0xFFFFFFFF, v (since ~v = 0xFFFFFFFF - v for unsigned)
+        if instr.operands:
+            src = resolve(instr.operands[0])
+            # Lower to two instructions: iconst tmp = 0xFFFFFFFF, isub dest = tmp - src
+            tmp_v = instr.dest + 10000  # temporary variable (will be renumbered)
+            r1 = CLIFInstr(opcode="iconst", dest=tmp_v, type="i32")
+            r1.immediates = [MASK32]
+            r2 = CLIFInstr(opcode="isub", dest=instr.dest, type="i32")
+            r2.operands = [tmp_v, src]
+            return [r1, r2]
+        return None
+
     if op == "umulhi":
         # Upper half of unsigned multiply — keep as-is
         if len(instr.operands) >= 2:

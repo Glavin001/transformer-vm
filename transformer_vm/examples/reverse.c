@@ -9,9 +9,11 @@ void compute(const char *input) {
     /* Write reversed characters to buffer after the input's null terminator. */
     char *buf = (char *)(input + len + 1);
     int i = 0;
+    int j = len - 1;
     while (i < len) {
-        buf[i] = input[len - 1 - i];
+        buf[i] = input[j];
         i = i + 1;
+        j = j - 1;
     }
 
     /* Output the reversed string. */
