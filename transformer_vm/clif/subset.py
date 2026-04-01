@@ -257,6 +257,9 @@ def _subset_function(func: CLIFFunction) -> tuple[list[CLIFBlock], dict[int, int
     return simplified_blocks, extend_map, dead_vars
 
 
+_STACK_PTR_ADDR = 4  # Fixed memory address for the stack pointer variable
+
+
 def _simplify_instr(
     instr: CLIFInstr,
     resolve: callable,
@@ -273,10 +276,26 @@ def _simplify_instr(
     if instr.dest is not None and instr.dest in dead:
         return None
 
-    # Skip store to vmctx (stack pointer save/restore: store ... v0+96)
-    if instr.opcode == "store" and instr.offset == 96:
+    # Stack pointer operations: load/store with 'table' flag at vmctx+96
+    # The stack pointer is a WASM global stored in vmctx. After vmctx
+    # elimination, we redirect these to a fixed memory address.
+    if instr.opcode == "load" and "table" in instr.flags:
+        if instr.operands and instr.operands[0] in vmctx:
+            # load sp from fixed address: load dest, addr=0, offset=_STACK_PTR_ADDR
+            # After flattening: SimpleInstr(load, dest=X, src1=None, imm=_STACK_PTR_ADDR)
+            # Reference interpreter: addr = vars_[src1](=0) + offset = 0 + 4 = 4
+            r = CLIFInstr(opcode="load_sp", dest=instr.dest, type="i32")
+            r.offset = _STACK_PTR_ADDR
+            return r
+
+    if instr.opcode == "store" and "table" in instr.flags:
         if instr.operands and instr.operands[-1] in vmctx:
-            return None
+            # store sp to fixed address
+            val_v = resolve(instr.operands[0])
+            r = CLIFInstr(opcode="store_sp", type="i32")
+            r.operands = [val_v]
+            r.offset = _STACK_PTR_ADDR
+            return r
 
     op = instr.opcode
 
@@ -576,6 +595,17 @@ def flatten_blocks(
                 result.append(SimpleInstr(opcode=instr.opcode, src1=val, src2=addr, imm=off))
                 current_pc += 1
 
+            elif instr.opcode == "load_sp":
+                # Load from fixed stack pointer address
+                result.append(SimpleInstr(opcode="load", dest=instr.dest, src1=None, imm=_STACK_PTR_ADDR))
+                current_pc += 1
+
+            elif instr.opcode == "store_sp":
+                # Store to fixed stack pointer address
+                val = instr.operands[0] if instr.operands else None
+                result.append(SimpleInstr(opcode="store", src1=val, src2=None, imm=_STACK_PTR_ADDR))
+                current_pc += 1
+
             elif instr.opcode == "copy":
                 result.append(SimpleInstr(opcode="copy", dest=instr.dest, src1=instr.operands[0] if instr.operands else None))
                 current_pc += 1
@@ -709,6 +739,7 @@ def _renumber_vars(instrs: list[SimpleInstr]) -> tuple[list[SimpleInstr], int]:
 def subset_and_flatten(
     functions: list[CLIFFunction],
     input_base: int = 0,
+    stack_pointer_init: int = 0,
 ) -> SimpleProg:
     """Subset and flatten a CLIF program (possibly multiple functions) into SimpleProg.
 
@@ -766,6 +797,39 @@ def subset_and_flatten(
                         instr.imm -= 1  # Backward branches go one further
                     if instr.opcode == "brif" and instr.false_offset < 0:
                         instr.false_offset -= 1
+
+    # Initialize stack pointer memory if the program uses it
+    has_sp_ops = any(
+        (instr.src1 is None and instr.imm == _STACK_PTR_ADDR)
+        or (instr.src2 is None and instr.imm == _STACK_PTR_ADDR)
+        for instr in flat_instrs
+    )
+    if stack_pointer_init > 0 and has_sp_ops:
+        # Find free v-numbers
+        all_vars = set()
+        for instr in flat_instrs:
+            for v in (instr.dest, instr.src1, instr.src2, instr.src3):
+                if v is not None:
+                    all_vars.add(v)
+        sp_val_v = max(all_vars) + 1 if all_vars else 0
+        sp_addr_v = sp_val_v + 1
+
+        # Patch load_sp/store_sp instructions to use sp_addr_v as the address
+        for instr in flat_instrs:
+            if instr.opcode == "load" and instr.src1 is None and instr.imm == _STACK_PTR_ADDR:
+                instr.src1 = sp_addr_v
+                instr.imm = 0
+            elif instr.opcode == "store" and instr.src2 is None and instr.imm == _STACK_PTR_ADDR:
+                instr.src2 = sp_addr_v
+                instr.imm = 0
+
+        # Prepend SP initialization (offsets are relative, no fixup needed)
+        sp_init = [
+            SimpleInstr(opcode="iconst", dest=sp_val_v, imm=stack_pointer_init & MASK32),
+            SimpleInstr(opcode="iconst", dest=sp_addr_v, imm=_STACK_PTR_ADDR),
+            SimpleInstr(opcode="store", src1=sp_val_v, src2=sp_addr_v),
+        ]
+        flat_instrs = sp_init + flat_instrs
 
     # Add halt at the end if the function doesn't end with return
     if not flat_instrs or flat_instrs[-1].opcode != "return":

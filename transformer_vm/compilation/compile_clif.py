@@ -96,6 +96,18 @@ def _get_input_base(wasm_path: str) -> int:
     return 0
 
 
+def _get_stack_pointer_init(wasm_path: str) -> int:
+    """Get the initial stack pointer value from the WASM module."""
+    from transformer_vm.compilation.decoder import decode
+
+    with open(wasm_path, "rb") as f:
+        mod = decode(f.read())
+    # Global 0 is typically __stack_pointer
+    if mod.globals:
+        return mod.globals[0]["init"]
+    return 0
+
+
 def compile_c_to_clif(c_path: str, args: str = "") -> SimpleProg:
     """Compile a C program to simplified CLIF via WASM.
 
@@ -127,12 +139,15 @@ def compile_c_to_clif(c_path: str, args: str = "") -> SimpleProg:
         functions = [parse_clif_file(f) for f in clif_files]
         logger.info("Parsed %d CLIF functions from %s", len(functions), wasm_path)
 
-        # Get input_base from WASM module
+        # Get input_base and stack pointer from WASM module
         input_base = _get_input_base(wasm_path)
-        logger.info("Input base: %d (0x%x)", input_base, input_base)
+        stack_pointer_init = _get_stack_pointer_init(wasm_path)
+        logger.info("Input base: %d (0x%x), Stack pointer: %d (0x%x)",
+                     input_base, input_base, stack_pointer_init, stack_pointer_init)
 
         # Step 3: Subset and flatten
-        prog = subset_and_flatten(functions, input_base=input_base)
+        prog = subset_and_flatten(functions, input_base=input_base,
+                                  stack_pointer_init=stack_pointer_init)
         logger.info("Simplified to %d instructions, %d vars", len(prog.instrs), prog.max_var + 1)
 
         return prog

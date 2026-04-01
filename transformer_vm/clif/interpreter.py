@@ -489,6 +489,14 @@ def build(program=None):
         + reglu(255 * memory_sign, 1 - is_boundary)
     )
 
+    # For sload8: byte 0 = memory byte, bytes 1-3 = 0xFF if sign bit set else 0
+    # (same sign extension as sextend8 but from memory_byte instead of src1_byte)
+    mem_byte_sign = stepglu(one, memory_byte - 128)
+    sload8_byte = persist(
+        reglu(memory_byte, is_boundary)
+        + 255 * reglu(mem_byte_sign, 1 - is_boundary)
+    )
+
     # The result byte to emit — gated by opcode
     result_byte = persist(
         # iconst: immediate bytes from program prefix
@@ -509,6 +517,8 @@ def build(program=None):
         # load
         + reglu(memory_byte, op_dot("load"))
         + reglu(memory_byte, op_dot("uload8") + is_boundary - 1)
+        # sload8: byte 0 = memory, bytes 1-3 = sign extension
+        + reglu(sload8_byte, op_dot("sload8"))
         # store (write-through: emit the value being stored)
         + reglu(top_byte, op_dot("store"))
         + reglu(top_byte, op_dot("store8") + is_boundary - 1)
@@ -528,6 +538,8 @@ def build(program=None):
         reglu(add_carry, op_dot("iadd"))
         + reglu(sub_borrow, op_dot("isub"))
         + reglu(sub_borrow, op_dot("ineg"))
+        + reglu(mem_byte_sign, op_dot("sload8") + is_boundary - 1)
+        + reglu(carry_late, op_dot("sload8") - is_boundary)
     )
 
     # ── Next-token prediction ────────────────────────────────────
