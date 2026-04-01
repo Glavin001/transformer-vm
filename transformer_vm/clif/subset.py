@@ -462,13 +462,21 @@ def flatten_blocks(
     for block in blocks:
         size = 0
         for instr in block.instrs:
-            if instr.opcode in ("brif", "jump"):
-                # Count copy instructions needed for block arguments
+            if instr.opcode == "brif":
+                # brif expands to: copies + brif + jump (for false fallthrough)
                 for _bid, args in instr.targets:
                     target_block = block_map.get(_bid)
                     if target_block and target_block.params and args:
                         size += min(len(args), len(target_block.params))
-            size += 1  # The instruction itself
+                size += 2  # brif + jump
+            elif instr.opcode == "jump":
+                for _bid, args in instr.targets:
+                    target_block = block_map.get(_bid)
+                    if target_block and target_block.params and args:
+                        size += min(len(args), len(target_block.params))
+                size += 1
+            else:
+                size += 1
         block_sizes[block.id] = size
 
     # Compute block start offsets
@@ -590,7 +598,19 @@ def flatten_blocks(
                 current_pc += 1
 
             elif instr.opcode == "brif":
-                # Insert copy instructions for block parameter bindings
+                # Flatten brif into: copies + conditional branch + unconditional jump
+                # This gives each branch a single 32-bit offset (like WASM br_if).
+                #
+                # Layout:
+                #   copy_true  dest, src, cond   (for true branch params)
+                #   copy_false dest, src, cond   (for false branch params)
+                #   brif cond, +true_offset      (if cond: jump to true target)
+                #   jump +false_offset            (else: jump to false target)
+                #
+                # If the false target is the next instruction after the jump,
+                # the jump is just a fallthrough (offset=0) and could be omitted,
+                # but we keep it for uniformity.
+
                 cond_v = instr.operands[0] if instr.operands else 0
                 true_bid, true_args = instr.targets[0] if instr.targets else (0, [])
                 false_bid, false_args = instr.targets[1] if len(instr.targets) > 1 else (0, [])
@@ -598,27 +618,27 @@ def flatten_blocks(
                 true_block = block_map.get(true_bid)
                 false_block = block_map.get(false_bid)
 
-                # Emit copies for true branch params
+                # Emit copies for true branch params (conditional on cond_v)
                 if true_block and true_block.params and true_args:
                     for (param_v, _ptype), arg_v in zip(true_block.params, true_args):
                         result.append(SimpleInstr(opcode="copy_true", dest=param_v, src1=arg_v, src2=cond_v))
                         current_pc += 1
 
-                # Emit copies for false branch params
+                # Emit copies for false branch params (conditional on !cond_v)
                 if false_block and false_block.params and false_args:
                     for (param_v, _ptype), arg_v in zip(false_block.params, false_args):
                         result.append(SimpleInstr(opcode="copy_false", dest=param_v, src1=arg_v, src2=cond_v))
                         current_pc += 1
 
-                # Emit the brif itself
+                # Emit brif with single 32-bit true offset
+                # Need +2 because the jump instruction follows the brif
                 true_offset = block_offsets.get(true_bid, 0) - (current_pc + 1)
+                result.append(SimpleInstr(opcode="brif", src1=cond_v, imm=true_offset))
+                current_pc += 1
+
+                # Emit unconditional jump for false branch
                 false_offset = block_offsets.get(false_bid, 0) - (current_pc + 1)
-                result.append(SimpleInstr(
-                    opcode="brif",
-                    src1=cond_v,
-                    imm=true_offset,
-                    false_offset=false_offset,
-                ))
+                result.append(SimpleInstr(opcode="jump", imm=false_offset))
                 current_pc += 1
 
             elif instr.opcode == "jump":

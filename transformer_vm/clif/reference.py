@@ -149,21 +149,18 @@ def _decode_instr(op, data):
         d["addr"] = data[2]
         d["offset"] = data[3] | (data[4] << 8)
     elif op == "brif":
-        # f0=0, f1=cond, f2:f3=true_offset, f4:f5=false_offset
+        # f0=0, f1=cond, f2:f5=32-bit signed offset (like WASM br_if)
         d["cond_var"] = data[1]
-        t = data[2] | (data[3] << 8)
-        if t >= 0x8000:
-            t -= 0x10000
-        d["true_offset"] = t
-        f = data[4] | (data[5] << 8)
-        if f >= 0x8000:
-            f -= 0x10000
-        d["false_offset"] = f
+        raw = data[2] | (data[3] << 8) | (data[4] << 16) | (data[5] << 24)
+        if raw >= 0x80000000:
+            raw -= 0x100000000
+        d["offset"] = raw  # signed 32-bit offset (taken when cond != 0)
     elif op == "jump":
-        t = data[0] | (data[1] << 8)
-        if t >= 0x8000:
-            t -= 0x10000
-        d["offset"] = t
+        # f0:f3=32-bit signed offset
+        raw = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24)
+        if raw >= 0x80000000:
+            raw -= 0x100000000
+        d["offset"] = raw
     elif op in ("copy", "copy_true", "copy_false"):
         d["dest"] = data[0]
         d["src"] = data[1]
@@ -501,17 +498,21 @@ def run(program, input_str="", max_tokens=1_000_000, trace=False):
         elif op == "brif":
             cond = vars_.get(d["cond_var"], 0)
             if cond != 0:
-                offset = d["true_offset"]
+                # Taken: jump by offset (like WASM br_if taken)
+                offset = d["offset"]
+                token_count += 6
+                if trace:
+                    trace_tokens.append("branch_taken")
+                    off_u32 = offset & MASK32
+                    trace_tokens.extend(_byte_tokens(off_u32, 4))
+                    trace_tokens.append(_commit(1, 0, 1))
+                pc = pc + 1 + offset
             else:
-                offset = d["false_offset"]
-            token_count += 6
-            if trace:
-                trace_tokens.append("branch_taken")
-                # Emit the actual offset as 4 bytes
-                off_u32 = offset & MASK32
-                trace_tokens.extend(_byte_tokens(off_u32, 4))
-                trace_tokens.append(_commit(1, 0, 1))
-            pc = pc + 1 + offset
+                # Not taken: fall through (like WASM br_if not taken)
+                pc += 1
+                token_count += 1
+                if trace:
+                    trace_tokens.append(_commit(1, 0, 0))
 
         elif op == "jump":
             offset = d["offset"]

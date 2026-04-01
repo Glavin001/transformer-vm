@@ -199,15 +199,14 @@ def _encode_instr(instr: SimpleInstr) -> list[int]:
         return [0, v(instr.src1), v(instr.src2), lo(off), hi(off), 0]
 
     if op == "brif":
-        # f0=0, f1=cond(src1), f2:f3=true_offset, f4:f5=false_offset
-        t = signed_16(instr.imm)
-        f = signed_16(instr.false_offset)
-        return [0, v(instr.src1), lo(t), hi(t), lo(f), hi(f)]
+        # f0=0, f1=cond(src1), f2:f5=32-bit signed offset (same as WASM br_if)
+        imm = instr.imm & MASK32
+        return [0, v(instr.src1), lo(imm), hi(imm), (imm >> 16) & 0xFF, (imm >> 24) & 0xFF]
 
     if op == "jump":
-        # f0:f1=offset, rest=0
-        t = signed_16(instr.imm)
-        return [lo(t), hi(t), 0, 0, 0, 0]
+        # f0:f3=32-bit signed offset, f4:f5=0
+        imm = instr.imm & MASK32
+        return [lo(imm), hi(imm), (imm >> 16) & 0xFF, (imm >> 24) & 0xFF, 0, 0]
 
     if op in ("copy", "copy_true", "copy_false"):
         # f0=dest, f1=src, f2=cond(for _true/_false)
