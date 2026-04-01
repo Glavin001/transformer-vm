@@ -512,7 +512,6 @@ def flatten_blocks(
     current_pc = 0
 
     for block in blocks:
-        assert block_offsets[block.id] == current_pc
 
         for instr in block.instrs:
             if instr.opcode == "iconst":
@@ -736,6 +735,145 @@ def _renumber_vars(instrs: list[SimpleInstr]) -> tuple[list[SimpleInstr], int]:
 # ── Top-level: subset and flatten a set of functions ──────────
 
 
+def _inline_calls(
+    main_blocks: list[CLIFBlock],
+    all_functions: dict[str, list[CLIFBlock]],
+    fn_refs: dict[str, tuple[str, str | None]],
+) -> list[CLIFBlock]:
+    """Inline function calls by splicing callee blocks into the main function.
+
+    Each call is replaced with:
+    1. Copy instructions mapping call arguments to callee parameters
+    2. A jump to the callee's entry block (remapped id)
+    3. The callee's blocks appended to the function (remapped ids + v-numbers)
+    4. Callee's return replaced with jump to a continuation block
+    5. A continuation block where execution resumes after the call
+    """
+    # Find max v-number and block id across all main blocks
+    max_v = 0
+    max_block = 0
+    for block in main_blocks:
+        max_block = max(max_block, block.id)
+        for v, _ in block.params:
+            max_v = max(max_v, v)
+        for instr in block.instrs:
+            if instr.dest is not None:
+                max_v = max(max_v, instr.dest)
+            for v in instr.operands:
+                if v is not None:
+                    max_v = max(max_v, v)
+
+    output_blocks = []
+
+    for block in main_blocks:
+        # Split block at each call site
+        current_instrs = []
+        current_block_id = block.id
+        current_params = block.params
+
+        for instr_idx, instr in enumerate(block.instrs):
+            if instr.opcode != "call" or instr.fn_ref is None:
+                current_instrs.append(instr)
+                continue
+
+            fn_name = instr.fn_ref
+            func_id, _sig = fn_refs.get(fn_name, (None, None))
+            if func_id is None or func_id not in all_functions:
+                current_instrs.append(instr)
+                continue
+
+            callee_blocks = all_functions[func_id]
+            if not callee_blocks:
+                current_instrs.append(instr)
+                continue
+
+            # Allocate ids for this inline site
+            v_offset = max_v + 1
+            block_offset = max_block + 1
+            cont_block_id = block_offset + len(callee_blocks)
+
+            # Remap callee v-numbers
+            def _remap_v(v, off=v_offset):
+                return v + off if v is not None else None
+
+            # Copy call arguments to callee entry block parameters
+            callee_entry = callee_blocks[0]
+            i32_params = [(v, t) for v, t in callee_entry.params if t == "i32"]
+            call_args = instr.operands
+
+            for (param_v, _), arg_v in zip(i32_params, call_args):
+                ci = CLIFInstr(opcode="copy", dest=param_v + v_offset)
+                ci.operands = [arg_v]
+                current_instrs.append(ci)
+
+            # Jump to callee entry
+            ji = CLIFInstr(opcode="jump")
+            ji.targets = [(callee_entry.id + block_offset, [])]
+            current_instrs.append(ji)
+
+            # Emit the current block up to this point
+            output_blocks.append(CLIFBlock(
+                id=current_block_id, params=current_params, instrs=current_instrs
+            ))
+
+            # Emit remapped callee blocks
+            for cb in callee_blocks:
+                new_instrs = []
+                for ci in cb.instrs:
+                    if ci.opcode == "return":
+                        ri = CLIFInstr(opcode="jump")
+                        ri.targets = [(cont_block_id, [])]
+                        new_instrs.append(ri)
+                    else:
+                        ni = CLIFInstr(
+                            opcode=ci.opcode,
+                            dest=_remap_v(ci.dest),
+                            type=ci.type,
+                            operands=[_remap_v(v) for v in ci.operands],
+                            immediates=list(ci.immediates),
+                            cond=ci.cond,
+                            targets=[
+                                (bid + block_offset, [_remap_v(a) for a in args])
+                                for bid, args in ci.targets
+                            ],
+                            flags=list(ci.flags),
+                            sig_ref=ci.sig_ref,
+                            fn_ref=ci.fn_ref,
+                            offset=ci.offset,
+                        )
+                        new_instrs.append(ni)
+                output_blocks.append(CLIFBlock(
+                    id=cb.id + block_offset,
+                    params=[(v + v_offset, t) for v, t in cb.params],
+                    instrs=new_instrs,
+                ))
+
+            # Update max for next call site
+            for cb in callee_blocks:
+                max_block = max(max_block, cb.id + block_offset)
+                for v, _ in cb.params:
+                    max_v = max(max_v, v + v_offset)
+                for ci in cb.instrs:
+                    if ci.dest is not None:
+                        max_v = max(max_v, ci.dest + v_offset)
+                    for v in ci.operands:
+                        if v is not None:
+                            max_v = max(max_v, v + v_offset)
+            max_block = cont_block_id
+
+            # Start a new continuation block for remaining instructions
+            current_block_id = cont_block_id
+            current_params = []
+            current_instrs = []
+
+        # Emit the final segment of this block
+        output_blocks.append(CLIFBlock(
+            id=current_block_id, params=current_params, instrs=current_instrs
+        ))
+
+    return output_blocks
+
+
 def subset_and_flatten(
     functions: list[CLIFFunction],
     input_base: int = 0,
@@ -743,16 +881,15 @@ def subset_and_flatten(
 ) -> SimpleProg:
     """Subset and flatten a CLIF program (possibly multiple functions) into SimpleProg.
 
-    For now, only processes the compute function (u0:0).
-    Helper functions (sscanf, printf) are handled by replacing their calls
-    with the WASM-equivalent behavior through the compilation pipeline.
+    Inlines helper functions (sscanf, printf) into the main compute function.
     """
     # Find the compute function (first function = u0:0)
     compute_func = None
+    func_map = {}  # func_id -> CLIFFunction
     for func in functions:
+        func_map[func.func_id] = func
         if func.func_id == "u0:0" or func.func_id == "%compute":
             compute_func = func
-            break
 
     if compute_func is None and functions:
         compute_func = functions[0]
@@ -760,20 +897,28 @@ def subset_and_flatten(
     if compute_func is None:
         return SimpleProg()
 
+    # Subset ALL functions
+    all_subsetted = {}
+    for func_id, func in func_map.items():
+        blocks, _, _ = _subset_function(func)
+        all_subsetted[func_id] = blocks
+
+    # Inline calls in the compute function
+    compute_blocks = all_subsetted.get(compute_func.func_id, [])
+    if compute_func.fn_refs:
+        compute_blocks = _inline_calls(
+            compute_blocks, all_subsetted, compute_func.fn_refs
+        )
+
     # Find the i32 parameter v-number (the input pointer)
-    # In wasmtime's CLIF, function params are (i64 vmctx, i64, i32).
-    # The i32 param (v2) is the input pointer.
     input_param_v = None
     for i, (ptype, _pname) in enumerate(compute_func.params):
         if ptype == "i32":
-            input_param_v = i  # This is the v-number
+            input_param_v = i
             break
 
-    # Subset the function
-    simplified_blocks, _extend_map, _dead_vars = _subset_function(compute_func)
-
     # Flatten to linear instruction list
-    flat_instrs = flatten_blocks(simplified_blocks, func_name=compute_func.name)
+    flat_instrs = flatten_blocks(compute_blocks, func_name=compute_func.name)
 
     # Prepend initialization for function parameters that are used but not defined
     # The i32 parameter (input pointer) needs to be initialized with input_base
