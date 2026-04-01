@@ -303,21 +303,24 @@ def build(program=None):
 
     # Use (dest_v + 1) to avoid key=0 conflicts
     var_write_key = 4 * (fetched_dest_v + 1) + byte_index
-    # Clear key at non-byte positions (boundaries, commits, etc.)
-    clear_at_boundary = is_boundary
+    # Clear key at boundaries AND at byte positions of non-var-write instructions.
+    # This prevents branch offset bytes, store bytes, etc. from polluting the
+    # variable key space (since brif has dest_v=0 which collides with v0).
+    not_var_write_instr = 1 - fetched_var_write
+    clear_at_non_var_byte = is_boundary + not_var_write_instr
 
     src1_byte = fetch(
         byte_number - 1,
         query=4 * (fetched_src1_v + 1) + byte_index + 1,
         key=var_write_key,
-        clear_key=clear_at_boundary,
+        clear_key=clear_at_non_var_byte,
     )
 
     src2_byte = fetch(
         byte_number - 1,
         query=4 * (fetched_src2_v + 1) + byte_index + 1,
         key=var_write_key,
-        clear_key=clear_at_boundary,
+        clear_key=clear_at_non_var_byte,
     )
 
     # Reconstruct full 32-bit src values for comparisons and memory access
@@ -328,7 +331,7 @@ def build(program=None):
             byte_number - 1,
             query=4 * (fetched_src1_v + 1) + i,
             key=var_write_key,
-            clear_key=clear_at_boundary,
+            clear_key=clear_at_non_var_byte,
         )
         for i in range(1, 5)
     ]
@@ -341,7 +344,7 @@ def build(program=None):
             byte_number - 1,
             query=4 * (fetched_src2_v + 1) + i,
             key=var_write_key,
-            clear_key=clear_at_boundary,
+            clear_key=clear_at_non_var_byte,
         )
         for i in range(1, 5)
     ]
@@ -443,7 +446,7 @@ def build(program=None):
         byte_number - 1,
         query=4 * (field_bytes[3] + 1) + byte_index + 1,
         key=var_write_key,
-        clear_key=clear_at_boundary,
+        clear_key=clear_at_non_var_byte,
     )
 
     # ── Result byte computation ──────────────────────────────────
@@ -453,6 +456,20 @@ def build(program=None):
     # Immediate bytes are at instruction_position + 2 + byte_index
     const_byte = fetch(
         byte_number - 1, query=instruction_position + byte_index + 2, key=position
+    )
+
+    # ── Bitwise operations (approximate for ALM) ───────────────
+    # True bitwise AND/OR/XOR can't be expressed directly in the ALM.
+    # For the common case of masking with 0xFF (band v, 0xFF), the result
+    # is just byte 0 of src1 with bytes 1-3 zeroed — same as the identity
+    # at the boundary. For full generality, these would need to be lowered.
+    # TODO: implement proper bitwise lowering for non-mask cases
+
+    # For sextend8: byte 0 = src byte 0, bytes 1-3 = 0xFF if sign bit set else 0
+    memory_sign = stepglu(one, src1_byte - 128)
+    sext_byte = persist(
+        reglu(src1_byte, is_boundary)
+        + reglu(255 * memory_sign, 1 - is_boundary)
     )
 
     # The result byte to emit — gated by opcode
@@ -480,8 +497,10 @@ def build(program=None):
         + reglu(top_byte, op_dot("store8") + is_boundary - 1)
         # ineg = 0 - src1
         + reglu(sub_byte, op_dot("ineg"))
-        # sextend8 (byte 0 = src, bytes 1-3 = sign extension)
-        + reglu(src1_byte, op_dot("sextend8") + is_boundary - 1)
+        # band: byte 0 = src1 & src2 (approximated as src1 for 0xFF mask)
+        + reglu(src1_byte, op_dot("band") + is_boundary - 1)
+        # sextend8: byte 0 = src byte, bytes 1-3 = sign extension
+        + reglu(sext_byte, op_dot("sextend8"))
     )
 
     result_carry = persist(
