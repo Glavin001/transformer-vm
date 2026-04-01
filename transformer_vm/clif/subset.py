@@ -62,6 +62,7 @@ class SimpleProg:
     instrs: list[SimpleInstr] = field(default_factory=list)
     input_base: int = 0  # memory address where input is stored
     max_var: int = 0  # highest v-number used
+    data_segments: list = field(default_factory=list)  # [(offset, bytes), ...]
 
 
 # ── Analysis: identify vmctx patterns ─────────────────────────
@@ -790,7 +791,9 @@ def _inline_calls(
             # Allocate ids for this inline site
             v_offset = max_v + 1
             block_offset = max_block + 1
-            cont_block_id = block_offset + len(callee_blocks)
+            # cont_block_id must be higher than all remapped callee block IDs
+            max_callee_block = max(cb.id for cb in callee_blocks)
+            cont_block_id = block_offset + max_callee_block + 1
 
             # Remap callee v-numbers
             def _remap_v(v, off=v_offset):
@@ -878,6 +881,7 @@ def subset_and_flatten(
     functions: list[CLIFFunction],
     input_base: int = 0,
     stack_pointer_init: int = 0,
+    data_segments: list | None = None,
 ) -> SimpleProg:
     """Subset and flatten a CLIF program (possibly multiple functions) into SimpleProg.
 
@@ -988,7 +992,10 @@ def subset_and_flatten(
     # Renumber variables
     flat_instrs, max_var = _renumber_vars(flat_instrs)
 
-    return SimpleProg(instrs=flat_instrs, input_base=input_base, max_var=max_var)
+    return SimpleProg(
+        instrs=flat_instrs, input_base=input_base, max_var=max_var,
+        data_segments=data_segments or [],
+    )
 
 
 def dump_simple_prog(prog: SimpleProg) -> str:

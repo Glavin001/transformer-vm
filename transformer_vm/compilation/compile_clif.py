@@ -67,6 +67,7 @@ CLIF_OPCODES = [
     "smax",
     "sextend8",
     "input_base",
+    "data_init",
 ]
 
 
@@ -94,6 +95,15 @@ def _get_input_base(wasm_path: str) -> int:
         if exp.name == "__heap_base" and exp.kind == 3:
             return (mod.globals[exp.index]["init"] + 15) & ~15
     return 0
+
+
+def _get_data_segments(wasm_path: str) -> list[tuple[int, bytes]]:
+    """Get initialized data segments from the WASM module."""
+    from transformer_vm.compilation.decoder import decode
+
+    with open(wasm_path, "rb") as f:
+        mod = decode(f.read())
+    return [(seg.offset, seg.data) for seg in mod.data_segments]
 
 
 def _get_stack_pointer_init(wasm_path: str) -> int:
@@ -139,15 +149,21 @@ def compile_c_to_clif(c_path: str, args: str = "") -> SimpleProg:
         functions = [parse_clif_file(f) for f in clif_files]
         logger.info("Parsed %d CLIF functions from %s", len(functions), wasm_path)
 
-        # Get input_base and stack pointer from WASM module
+        # Get input_base, stack pointer, and data segments from WASM module
         input_base = _get_input_base(wasm_path)
         stack_pointer_init = _get_stack_pointer_init(wasm_path)
-        logger.info("Input base: %d (0x%x), Stack pointer: %d (0x%x)",
-                     input_base, input_base, stack_pointer_init, stack_pointer_init)
+        data_segments = _get_data_segments(wasm_path)
+        logger.info(
+            "Input base: %d (0x%x), Stack pointer: %d (0x%x), Data segments: %d",
+            input_base, input_base, stack_pointer_init, stack_pointer_init, len(data_segments),
+        )
 
         # Step 3: Subset and flatten
-        prog = subset_and_flatten(functions, input_base=input_base,
-                                  stack_pointer_init=stack_pointer_init)
+        prog = subset_and_flatten(
+            functions, input_base=input_base,
+            stack_pointer_init=stack_pointer_init,
+            data_segments=data_segments,
+        )
         logger.info("Simplified to %d instructions, %d vars", len(prog.instrs), prog.max_var + 1)
 
         return prog
@@ -260,6 +276,21 @@ def tokenize_program(prog: SimpleProg, input_str: str = "") -> str:
     Each instruction is 7 tokens: opcode name + 6 hex bytes.
     """
     lines = ["{"]
+
+    # Emit data segment initialization as store8 instructions
+    # These pre-populate memory with the WASM data section (format strings, etc.)
+    if prog.data_segments:
+        for offset, data in prog.data_segments:
+            for i, byte in enumerate(data):
+                if byte != 0:  # Skip zero bytes (memory is already zero)
+                    addr = offset + i
+                    # Encode as: data_init addr_lo addr_hi addr_b2 addr_b3 byte 00
+                    addr32 = addr & MASK32
+                    lines.append(
+                        f"data_init {addr32 & 0xFF:02x} {(addr32 >> 8) & 0xFF:02x} "
+                        f"{(addr32 >> 16) & 0xFF:02x} {(addr32 >> 24) & 0xFF:02x} "
+                        f"{byte:02x} 00"
+                    )
 
     # Emit input_base pseudo-instruction if needed
     # (tells the interpreter where to find the input string in memory)

@@ -182,6 +182,10 @@ def _decode_instr(op, data):
             d["src2"] = data[2]
         else:
             d["imm"] = data[2] | (data[3] << 8) | (data[4] << 16) | (data[5] << 24)
+    elif op == "data_init":
+        # Memory initialization: f0:f3=address, f4=byte value
+        d["addr"] = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24)
+        d["val"] = data[4]
     elif op == "input_base":
         # f0=0, f1:f4=immediate (same layout as iconst)
         d["imm"] = data[1] | (data[2] << 8) | (data[3] << 16) | (data[4] << 24)
@@ -204,12 +208,21 @@ def run(program, input_str="", max_tokens=1_000_000, trace=False):
     # Decode all instructions
     decoded = [_decode_instr(op, data) for op, data in program]
 
-    # Find input_base
+    # Process data_init and input_base pseudo-instructions at the start
     input_base = None
     pc_start = 0
-    if decoded and decoded[0]["opcode"] == "input_base":
-        input_base = decoded[0].get("imm", 0)
-        pc_start = 1
+    for d in decoded:
+        if d["opcode"] == "data_init":
+            # Initialize one memory byte: addr in first 4 bytes, value in 5th
+            addr = d.get("addr", 0)
+            val = d.get("val", 0)
+            mem[addr] = val & 0xFF
+            pc_start += 1
+        elif d["opcode"] == "input_base":
+            input_base = d.get("imm", 0)
+            pc_start += 1
+        else:
+            break
 
     if input_base is not None and input_str:
         for i, ch in enumerate(input_str.encode("utf-8") + b"\x00"):
@@ -416,6 +429,11 @@ def run(program, input_str="", max_tokens=1_000_000, trace=False):
 
         elif op in ("load", "uload8", "sload8", "uload16", "sload16"):
             addr = (vars_.get(d["addr"], 0) + d.get("offset", 0)) & MASK32
+            if addr + 4 > len(mem):
+                logger.warning("Load from out-of-bounds address %d at pc=%d", addr, pc)
+                vars_[d["dest"]] = 0
+                pc += 1
+                continue
             if op == "load":
                 result = mem[addr] | (mem[addr + 1] << 8) | (mem[addr + 2] << 16) | (mem[addr + 3] << 24)
             elif op == "uload8":
@@ -438,6 +456,10 @@ def run(program, input_str="", max_tokens=1_000_000, trace=False):
         elif op in ("store", "store8", "store16"):
             val = vars_.get(d["val"], 0) & MASK32
             addr = (vars_.get(d["addr"], 0) + d.get("offset", 0)) & MASK32
+            if addr >= len(mem):
+                logger.warning("Store to out-of-bounds address %d at pc=%d, skipping", addr, pc)
+                pc += 1
+                continue
             if op == "store":
                 mem[addr] = val & 0xFF
                 mem[addr + 1] = (val >> 8) & 0xFF
