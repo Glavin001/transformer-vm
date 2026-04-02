@@ -348,6 +348,20 @@ def build(program=None):
         key=position,
     )
 
+    # Destination variable's current value (needed for copy_true/copy_false
+    # when the condition is false — the dest keeps its old value)
+    _dest_value, dest_position = fetch(
+        [store_value, position - 4],
+        query=fetched_dest_v,
+        key=dest_v_at_commit,
+        clear_key=not_var_write_commit,
+    )
+    dest_byte = fetch(
+        byte_number - 1,
+        query=dest_position + byte_index,
+        key=position,
+    )
+
     # ── Memory access ────────────────────────────────────────────
     # Memory uses latest-write-wins keyed by address.
     # For load: addr = src1_value + load_offset
@@ -430,8 +444,11 @@ def build(program=None):
         + reglu(1 - a_lt_b_u, stepglu(one, cond_code - 9) - stepglu(one, cond_code - 10))  # uge
     )
 
-    # Select: cond_nonzero from src1 (the condition variable)
+    # Condition checks:
+    # - For select/brif: condition is in field_bytes[1] = src1 → use src1_value
+    # - For copy_true/copy_false: condition is in field_bytes[2] = src2 → use src2_value
     cond_nonzero = stepglu(one, src1_value - 1)
+    cond_nonzero_src2 = stepglu(one, src2_value - 1)
 
     # ── Immediate byte (used by iconst and branch offsets) ──────
     # iconst: immediate bytes at instruction_position + 2 + byte_index
@@ -517,10 +534,14 @@ def build(program=None):
         + reglu(sub_byte, op_dot("isub"))
         # icmp (byte 0 = result, bytes 1-3 = 0)
         + reglu(cmp_result, op_dot("icmp") + is_boundary - 1)
-        # copy variants
+        # copy: always emit source byte
         + reglu(src1_byte, op_dot("copy"))
-        + reglu(src1_byte, op_dot("copy_true"))
-        + reglu(src1_byte, op_dot("copy_false"))
+        # copy_true: emit source if cond(src2) true, dest (unchanged) if false
+        + reglu(src1_byte, op_dot("copy_true") + cond_nonzero_src2 - 1)
+        + reglu(dest_byte, op_dot("copy_true") - cond_nonzero_src2)
+        # copy_false: emit source if cond(src2) false, dest (unchanged) if true
+        + reglu(src1_byte, op_dot("copy_false") - cond_nonzero_src2)
+        + reglu(dest_byte, op_dot("copy_false") + cond_nonzero_src2 - 1)
         # select: true_val (src2) if cond_nonzero, else false_val (src3)
         + reglu(src2_byte, op_dot("select") + cond_nonzero - 1)
         + reglu(src3_byte, op_dot("select") - cond_nonzero)

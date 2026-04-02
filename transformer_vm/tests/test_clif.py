@@ -195,7 +195,7 @@ def test_clif_graph_evaluator_reverse(clif_data):
 def test_clif_graph_evaluator_addition(clif_data):
     """Level 5: CALM graph evaluator on addition — multi-loop store8/sload8."""
     output = _run_clif_graph_evaluator(clif_data, "addition", max_steps=5000, use_hull=True)
-    assert output.endswith("\n"), f"Should end with newline, got: {output!r}"
+    assert output == "19134\n", f"got {output!r}"
 
 
 # ── Multi-function compilation (future) ───────────────────────
