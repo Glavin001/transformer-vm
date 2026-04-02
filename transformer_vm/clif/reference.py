@@ -244,7 +244,7 @@ def run(program, input_str="", max_tokens=1_000_000, trace=False):
                     trace_tokens.append(chr(ch_byte))
                 else:
                     trace_tokens.append(f"{ch_byte:02x}")
-            trace_tokens.append(_commit(0, 0, 0))
+            trace_tokens.append(_commit(1, 0, 0))
 
     while pc < len(decoded) and token_count < max_tokens:
         d = decoded[pc]

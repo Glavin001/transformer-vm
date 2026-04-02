@@ -278,13 +278,11 @@ def tokenize_program(prog: SimpleProg, input_str: str = "") -> str:
     lines = ["{"]
 
     # Emit data segment initialization as store8 instructions
-    # These pre-populate memory with the WASM data section (format strings, etc.)
     if prog.data_segments:
         for offset, data in prog.data_segments:
             for i, byte in enumerate(data):
-                if byte != 0:  # Skip zero bytes (memory is already zero)
+                if byte != 0:
                     addr = offset + i
-                    # Encode as: data_init addr_lo addr_hi addr_b2 addr_b3 byte 00
                     addr32 = addr & MASK32
                     lines.append(
                         f"data_init {addr32 & 0xFF:02x} {(addr32 >> 8) & 0xFF:02x} "
@@ -292,8 +290,7 @@ def tokenize_program(prog: SimpleProg, input_str: str = "") -> str:
                         f"{byte:02x} 00"
                     )
 
-    # Emit input_base pseudo-instruction if needed
-    # (tells the interpreter where to find the input string in memory)
+    # Emit input_base pseudo-instruction
     if prog.input_base:
         ib = SimpleInstr(opcode="input_base", imm=prog.input_base)
         data = _encode_instr(ib)
@@ -316,7 +313,7 @@ def tokenize_program(prog: SimpleProg, input_str: str = "") -> str:
                 lines.append(chr(b))
             else:
                 lines.append(f"{b:02x}")
-        lines.append("commit(+0,vw=0,bt=0)")
+        lines.append("commit(+1,vw=0,bt=0)")
 
     return "\n".join(lines) + "\n"
 
