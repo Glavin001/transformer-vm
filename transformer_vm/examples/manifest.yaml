@@ -8,7 +8,7 @@ programs:
   - name: store_load
     args: "test"
   - name: reverse
-    args: "abcde"
+    args: "abcd"
   - name: addition
     args: "12345+6789"
   - name: collatz
