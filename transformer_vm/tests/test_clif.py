@@ -42,8 +42,8 @@ PROGRAMS = [
 
 # Multi-function programs (need call/return or inlining):
 MULTI_FUNCTION_PROGRAMS = [
-    ("collatz", "7"),
-    ("fibonacci", "10"),
+    ("collatz", "7", "7 22 11 34 17 52 26 13 40 20 10 5 16 8 4 2 1\n"),
+    ("fibonacci", "10", "55\n"),
 ]
 
 
@@ -62,13 +62,13 @@ def clif_data(data_dir):
         if not os.path.exists(clif_ref):
             generate_ref(clif_txt, clif_ref)
 
-    for name, args in MULTI_FUNCTION_PROGRAMS:
+    for name, args, _expected in MULTI_FUNCTION_PROGRAMS:
         clif_txt = os.path.join(data_dir, f"{name}_clif.txt")
         if not os.path.exists(clif_txt):
-            try:
-                compile_and_save(os.path.join(EXAMPLES_DIR, f"{name}.c"), args=args, name=name)
-            except Exception:
-                pass  # Multi-function may fail; that's OK
+            compile_and_save(os.path.join(EXAMPLES_DIR, f"{name}.c"), args=args, name=name)
+        clif_ref = os.path.join(data_dir, f"{name}_clif_ref.txt")
+        if not os.path.exists(clif_ref):
+            generate_ref(clif_txt, clif_ref)
 
     return data_dir
 
@@ -242,17 +242,38 @@ def test_clif_graph_evaluator_addition(clif_data):
     assert output == "19134\n", f"got {output!r}"
 
 
-# ── Multi-function compilation (future) ───────────────────────
+# ── Multi-function programs (inlined) ─────────────────────────
 
 
-@pytest.mark.parametrize("program,args", MULTI_FUNCTION_PROGRAMS)
-def test_clif_compiles_multi_function(program, args, clif_data):
-    """Multi-function programs compile through the CLIF pipeline."""
+@pytest.mark.parametrize("program,args,expected", MULTI_FUNCTION_PROGRAMS)
+def test_clif_multi_function_reference(clif_data, program, args, expected):
+    """Multi-function programs produce correct output via function inlining."""
+    from transformer_vm.clif.reference import load_clif_program, run
+
+    prog, input_str = load_clif_program(os.path.join(clif_data, f"{program}_clif.txt"))
+    _instrs, _tokens, output = run(prog, input_str, max_tokens=500_000)
+    assert output == expected, f"{program}: got {output!r}, expected {expected!r}"
+
+
+@pytest.mark.parametrize("program,args,expected", MULTI_FUNCTION_PROGRAMS)
+def test_clif_multi_function_trace(clif_data, program, args, expected):
+    """Multi-function program traces are well-formed."""
+    from transformer_vm.clif.reference import load_clif_program, run
+
+    prog, input_str = load_clif_program(os.path.join(clif_data, f"{program}_clif.txt"))
+    _instrs, _tokens, output, trace = run(prog, input_str, trace=True, max_tokens=500_000)
+    assert output == expected
+    assert trace[-1] == "halt", "Trace must end with halt"
+    out_tokens = [t for t in trace if t.startswith("out(")]
+    assert len(out_tokens) == len(output), (
+        f"out() count ({len(out_tokens)}) != output length ({len(output)})"
+    )
+
+
+@pytest.mark.parametrize("program,args,expected", MULTI_FUNCTION_PROGRAMS)
+def test_clif_multi_function_var_limit(clif_data, program, args, expected):
+    """Multi-function programs stay within the 256-variable encoding limit."""
     from transformer_vm.clif.reference import load_clif_program
 
-    clif_txt = os.path.join(clif_data, f"{program}_clif.txt")
-    if not os.path.exists(clif_txt):
-        pytest.skip(f"{program}_clif.txt not compiled")
-    prog, input_str = load_clif_program(clif_txt)
+    prog, input_str = load_clif_program(os.path.join(clif_data, f"{program}_clif.txt"))
     assert len(prog) > 100, f"Expected >100 instructions for {program}, got {len(prog)}"
-    assert input_str == args

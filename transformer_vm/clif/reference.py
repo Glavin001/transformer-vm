@@ -123,12 +123,7 @@ def _decode_instr(op, data):
     elif op in ("iadd", "isub", "imul", "band", "bor", "bxor", "ishl", "ushr", "sshr"):
         d["dest"] = data[0]
         d["src1"] = data[1]
-        if data[2] < 128 and data[3] == 0 and data[4] == 0 and data[5] == 0:
-            # Could be src2 (var ref) or immediate — check context
-            # If src2 looks like a var ref (small number), treat as var
-            d["src2"] = data[2]
-        else:
-            d["imm"] = data[2] | (data[3] << 8) | (data[4] << 16) | (data[5] << 24)
+        d["src2"] = data[2]
     elif op == "icmp":
         d["dest"] = data[0]
         d["src1"] = data[1]
@@ -178,10 +173,7 @@ def _decode_instr(op, data):
     elif op in ("smin", "smax"):
         d["dest"] = data[0]
         d["src1"] = data[1]
-        if data[3] == 0 and data[4] == 0 and data[5] == 0:
-            d["src2"] = data[2]
-        else:
-            d["imm"] = data[2] | (data[3] << 8) | (data[4] << 16) | (data[5] << 24)
+        d["src2"] = data[2]
     elif op == "data_init":
         # Memory initialization: f0:f3=address, f4=byte value
         d["addr"] = data[0] | (data[1] << 8) | (data[2] << 16) | (data[3] << 24)
@@ -268,10 +260,7 @@ def run(program, input_str="", max_tokens=1_000_000, trace=False):
 
         elif op in ("iadd", "isub"):
             a = vars_.get(d["src1"], 0) & MASK32
-            if "src2" in d:
-                b = vars_.get(d["src2"], 0) & MASK32
-            else:
-                b = d.get("imm", 0) & MASK32
+            b = vars_.get(d["src2"], 0) & MASK32
 
             if op == "iadd":
                 result = (a + b) & MASK32
@@ -289,7 +278,7 @@ def run(program, input_str="", max_tokens=1_000_000, trace=False):
 
         elif op == "imul":
             a = vars_.get(d["src1"], 0) & MASK32
-            b = vars_.get(d.get("src2", d["src1"]), 0) & MASK32 if "src2" in d else (d.get("imm", 0) & MASK32)
+            b = vars_.get(d["src2"], 0) & MASK32
             result = (a * b) & MASK32
             vars_[d["dest"]] = result
             token_count += 5
@@ -300,10 +289,7 @@ def run(program, input_str="", max_tokens=1_000_000, trace=False):
 
         elif op in ("band", "bor", "bxor"):
             a = vars_.get(d["src1"], 0) & MASK32
-            if "src2" in d:
-                b = vars_.get(d["src2"], 0) & MASK32
-            else:
-                b = d.get("imm", 0) & MASK32
+            b = vars_.get(d["src2"], 0) & MASK32
             if op == "band":
                 result = a & b
             elif op == "bor":
@@ -319,7 +305,7 @@ def run(program, input_str="", max_tokens=1_000_000, trace=False):
 
         elif op in ("ishl", "ushr", "sshr"):
             a = vars_.get(d["src1"], 0) & MASK32
-            b = vars_.get(d.get("src2", d["src1"]), 0) & MASK32 if "src2" in d else (d.get("imm", 0) & MASK32)
+            b = vars_.get(d["src2"], 0) & MASK32
             shift = b & 31
             if op == "ishl":
                 result = (a << shift) & MASK32
@@ -357,10 +343,7 @@ def run(program, input_str="", max_tokens=1_000_000, trace=False):
 
         elif op in ("smin", "smax"):
             a = _to_signed(vars_.get(d["src1"], 0) & MASK32)
-            if "src2" in d:
-                b = _to_signed(vars_.get(d["src2"], 0) & MASK32)
-            else:
-                b = _to_signed(d.get("imm", 0) & MASK32)
+            b = _to_signed(vars_.get(d["src2"], 0) & MASK32)
             result = (min(a, b) if op == "smin" else max(a, b)) & MASK32
             vars_[d["dest"]] = result
             token_count += 5
