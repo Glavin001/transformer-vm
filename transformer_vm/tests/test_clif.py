@@ -208,7 +208,7 @@ def test_clif_graph_evaluator_store_load(clif_data):
 
 def test_clif_graph_evaluator_copy_buf(clif_data):
     """Level 5: store8 + uload8 roundtrip (regression for i64 const offset bug)."""
-    output = _run_clif_graph_evaluator(clif_data, "copy_buf", use_hull=True)
+    output = _run_clif_graph_evaluator(clif_data, "copy_buf", max_steps=2000, use_hull=True)
     assert output == "AB\n", f"got {output!r}"
 
 
