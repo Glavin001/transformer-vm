@@ -17,6 +17,12 @@ programs:
     args: "abcd"
   - name: addition
     args: "12345+6789"
+  - name: multiply
+    args: "abc"
+  - name: sum_bytes
+    args: "AB"
+  - name: max_char
+    args: "hZa"
   - name: collatz
     args: "7"
   - name: fibonacci

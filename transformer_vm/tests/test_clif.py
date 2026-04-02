@@ -34,6 +34,10 @@ PROGRAMS = [
     ("reverse", "abcd", "dcba\n"),
     # Level 7: multi-loop digit-by-digit arithmetic
     ("addition", "12345+6789", "19134\n"),
+    # Level 8: multiply, 32-bit store/load, more branches
+    ("multiply", "abc", "21\n"),
+    ("sum_bytes", "AB", "\x83\x00\n"),
+    ("max_char", "hZa", "h\n"),
 ]
 
 # Multi-function programs (need call/return or inlining):
@@ -210,6 +214,18 @@ def test_clif_graph_evaluator_copy_buf(clif_data):
     """Level 5: store8 + uload8 roundtrip (regression for i64 const offset bug)."""
     output = _run_clif_graph_evaluator(clif_data, "copy_buf", max_steps=2000, use_hull=True)
     assert output == "AB\n", f"got {output!r}"
+
+
+def test_clif_graph_evaluator_sum_bytes(clif_data):
+    """Level 8: 32-bit store + load roundtrip."""
+    output = _run_clif_graph_evaluator(clif_data, "sum_bytes", use_hull=True)
+    assert output == "\x83\x00\n", f"got {output!r}"
+
+
+def test_clif_graph_evaluator_max_char(clif_data):
+    """Level 8: smax conditional update."""
+    output = _run_clif_graph_evaluator(clif_data, "max_char", use_hull=True)
+    assert output == "h\n", f"got {output!r}"
 
 
 @pytest.mark.slow
