@@ -157,6 +157,8 @@ def _subset_function(func: CLIFFunction) -> tuple[list[CLIFBlock], dict[int, int
 
     # Track i64 constant values for address offset computation
     i64_const_vals: dict[int, int] = {}  # v_num -> constant value
+    # Track i64 iadd results that should become i32 iadd with constant offset
+    i32_const_for_i64: dict[int, tuple] = {}  # dest_v -> (base_i32_v, const_val, const_var)
 
     # First pass: identify i64 intermediaries and build resolution maps
     for block in func.blocks:
@@ -193,17 +195,28 @@ def _subset_function(func: CLIFFunction) -> tuple[list[CLIFBlock], dict[int, int
                     op1_is_dead = ops[1] in dead_vars or ops[1] in vmctx_vars
 
                     if op0_is_i64 and op1_is_i64:
-                        # Both operands are i64 → this is an address computation
-                        if op0_is_dead and op1_is_ext:
+                        # Both operands are i64 → address computation.
+                        # Check addr+const FIRST (before dead+ext which would drop the const)
+                        op0_resolved = extend_map.get(ops[0])
+                        op1_resolved = extend_map.get(ops[1])
+                        op0_const = i64_const_vals.get(ops[0])
+                        op1_const = i64_const_vals.get(ops[1])
+
+                        if op0_resolved is not None and op1_const is not None:
+                            # iadd(resolved_addr, i64_const) → keep as i32 iadd
+                            const_var = instr.dest + 50000
+                            i32_const_for_i64[instr.dest] = (op0_resolved, op1_const, const_var)
+                            continue
+                        elif op1_resolved is not None and op0_const is not None:
+                            const_var = instr.dest + 50000
+                            i32_const_for_i64[instr.dest] = (op1_resolved, op0_const, const_var)
+                            continue
+                        elif op0_is_dead and op1_is_ext:
                             extend_map[instr.dest] = extend_map[ops[1]]
                         elif op1_is_dead and op0_is_ext:
                             extend_map[instr.dest] = extend_map[ops[0]]
                         elif op0_is_dead and op1_is_dead:
                             vmctx_vars.add(instr.dest)
-                        elif op0_is_ext and ops[1] in i64_const_vals:
-                            extend_map[instr.dest] = extend_map[ops[0]]
-                        elif op1_is_ext and ops[0] in i64_const_vals:
-                            extend_map[instr.dest] = extend_map[ops[1]]
                         elif op0_is_ext and op1_is_ext:
                             # iadd of two extended i32s — keep as real iadd
                             continue
@@ -235,6 +248,19 @@ def _subset_function(func: CLIFFunction) -> tuple[list[CLIFBlock], dict[int, int
     for block in func.blocks:
         new_instrs = []
         for instr in block.instrs:
+            # Handle iadd that should become i32 iadd + iconst
+            if instr.dest in i32_const_for_i64:
+                base_v, const_val, const_var = i32_const_for_i64[instr.dest]
+                # Emit: iconst const_var = const_val
+                ci = CLIFInstr(opcode="iconst", dest=const_var, type="i32")
+                ci.immediates = [const_val & MASK32]
+                new_instrs.append(ci)
+                # Emit: iadd dest = base_v + const_var
+                ai = CLIFInstr(opcode="iadd", dest=instr.dest, type="i32")
+                ai.operands = [base_v, const_var]
+                new_instrs.append(ai)
+                continue
+
             simplified = _simplify_instr(
                 instr,
                 resolve_var,

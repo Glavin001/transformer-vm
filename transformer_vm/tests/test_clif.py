@@ -19,6 +19,7 @@ PROGRAMS = [
     ("hello", "World", "Hello World!\n"),
     ("countdown", "", "9876543210\n"),
     ("minmax", "HELLO", "EO\n"),
+    ("store_load", "test", "XY\n"),
     ("reverse", "abcde", "edcba\n"),
     ("addition", "12345+6789", "19134\n"),
 ]
@@ -173,6 +174,12 @@ def test_clif_graph_evaluator_minmax(clif_data):
     """Level 3: CALM graph evaluator on minmax — smin/smax + conditional branches."""
     output = _run_clif_graph_evaluator(clif_data, "minmax", use_hull=True)
     assert output == "EO\n", f"got {output!r}"
+
+
+def test_clif_graph_evaluator_store_load(clif_data):
+    """Level 4: CALM graph evaluator on store_load — store8 + sload8 roundtrip."""
+    output = _run_clif_graph_evaluator(clif_data, "store_load", use_hull=True)
+    assert output == "XY\n", f"got {output!r}"
 
 
 @pytest.mark.slow

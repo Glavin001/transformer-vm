@@ -5,6 +5,8 @@ programs:
     args: ""
   - name: minmax
     args: "HELLO"
+  - name: store_load
+    args: "test"
   - name: reverse
     args: "abcde"
   - name: addition
