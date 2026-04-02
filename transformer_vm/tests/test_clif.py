@@ -155,7 +155,6 @@ def _run_clif_graph_evaluator(clif_data, program, max_steps=2000, use_hull=True)
     with open(prog_file) as f:
         tokens = f.read().split()
 
-    prog_end_idx = tokens.index("}")
     vals = None
     for i in range(len(tokens)):
         vals = rt.step(tokens[i])

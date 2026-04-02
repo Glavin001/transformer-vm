@@ -15,7 +15,6 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-import re
 
 from transformer_vm.clif.subset import COND_CODES, MASK32
 
@@ -166,11 +165,7 @@ def _decode_instr(op, data):
     elif op in ("ineg", "sextend8"):
         d["dest"] = data[0]
         d["src"] = data[1]
-    elif op == "umulhi":
-        d["dest"] = data[0]
-        d["src1"] = data[1]
-        d["src2"] = data[2]
-    elif op in ("smin", "smax"):
+    elif op in ("umulhi", "smin", "smax"):
         d["dest"] = data[0]
         d["src1"] = data[1]
         d["src2"] = data[2]

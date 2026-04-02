@@ -12,7 +12,6 @@ instructions read from named variables, not from an implicit stack.
 
 from transformer_vm.graph import core as _graph
 from transformer_vm.graph.core import (
-    Expression,
     InputDimension,
     auto_name,
     fetch,

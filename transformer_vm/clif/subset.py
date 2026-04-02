@@ -75,9 +75,8 @@ def _find_heap_base(func: CLIFFunction) -> int | None:
     """
     for block in func.blocks:
         for instr in block.instrs:
-            if instr.opcode == "load" and instr.type == "i64":
-                if instr.offset == 56 and 0 in instr.operands:
-                    return instr.dest
+            if instr.opcode == "load" and instr.type == "i64" and instr.offset == 56 and 0 in instr.operands:
+                return instr.dest
     return None
 
 
@@ -88,9 +87,8 @@ def _find_stack_ptr(func: CLIFFunction) -> int | None:
     """
     for block in func.blocks:
         for instr in block.instrs:
-            if instr.opcode == "load" and instr.type == "i32":
-                if instr.offset == 96 and 0 in instr.operands:
-                    return instr.dest
+            if instr.opcode == "load" and instr.type == "i32" and instr.offset == 96 and 0 in instr.operands:
+                return instr.dest
     return None
 
 
@@ -307,8 +305,7 @@ def _simplify_instr(
     # Stack pointer operations: load/store with 'table' flag at vmctx+96
     # The stack pointer is a WASM global stored in vmctx. After vmctx
     # elimination, we redirect these to a fixed memory address.
-    if instr.opcode == "load" and "table" in instr.flags:
-        if instr.operands and instr.operands[0] in vmctx:
+    if instr.opcode == "load" and "table" in instr.flags and instr.operands and instr.operands[0] in vmctx:
             # load sp from fixed address: load dest, addr=0, offset=_STACK_PTR_ADDR
             # After flattening: SimpleInstr(load, dest=X, src1=None, imm=_STACK_PTR_ADDR)
             # Reference interpreter: addr = vars_[src1](=0) + offset = 0 + 4 = 4
@@ -316,8 +313,7 @@ def _simplify_instr(
             r.offset = _STACK_PTR_ADDR
             return r
 
-    if instr.opcode == "store" and "table" in instr.flags:
-        if instr.operands and instr.operands[-1] in vmctx:
+    if instr.opcode == "store" and "table" in instr.flags and instr.operands and instr.operands[-1] in vmctx:
             # store sp to fixed address
             val_v = resolve(instr.operands[0])
             r = CLIFInstr(opcode="store_sp", type="i32")
@@ -535,7 +531,7 @@ def flatten_blocks(
                 for _bid, args in instr.targets:
                     target_block = block_map.get(_bid)
                     if target_block and target_block.params and args:
-                        for (pv, _pt), av in zip(target_block.params, args):
+                        for (pv, _pt), av in zip(target_block.params, args, strict=False):
                             if pv != av:  # Match pass-2 identity-copy skip
                                 size += 1
                 size += 1
@@ -558,8 +554,6 @@ def flatten_blocks(
     for block in blocks:
         block_offsets[block.id] = offset
         offset += block_sizes[block.id]
-
-    total_instrs = offset
 
     # Pass 2: emit instructions
     result: list[SimpleInstr] = []
@@ -709,13 +703,13 @@ def flatten_blocks(
 
                 # Emit copies for true branch params (conditional on cond_v)
                 if true_block and true_block.params and true_args:
-                    for (param_v, _ptype), arg_v in zip(true_block.params, true_args):
+                    for (param_v, _ptype), arg_v in zip(true_block.params, true_args, strict=False):
                         result.append(SimpleInstr(opcode="copy_true", dest=param_v, src1=arg_v, src2=cond_v))
                         current_pc += 1
 
                 # Emit copies for false branch params (conditional on !cond_v)
                 if false_block and false_block.params and false_args:
-                    for (param_v, _ptype), arg_v in zip(false_block.params, false_args):
+                    for (param_v, _ptype), arg_v in zip(false_block.params, false_args, strict=False):
                         result.append(SimpleInstr(opcode="copy_false", dest=param_v, src1=arg_v, src2=cond_v))
                         current_pc += 1
 
@@ -736,7 +730,7 @@ def flatten_blocks(
 
                 # Emit copies for target block params
                 if target_block and target_block.params and target_args:
-                    for (param_v, _ptype), arg_v in zip(target_block.params, target_args):
+                    for (param_v, _ptype), arg_v in zip(target_block.params, target_args, strict=False):
                         if param_v != arg_v:  # Skip identity copies
                             result.append(SimpleInstr(opcode="copy", dest=param_v, src1=arg_v))
                             current_pc += 1
@@ -896,7 +890,7 @@ def _inline_calls(
     # and never overlap. Use the same variable space for all callees.
     shared_v_offset = max_v + 1
     func_v_offsets: dict[str, int] = {}
-    for fn_name, (func_id, _sig) in fn_refs.items():
+    for _fn_name, (func_id, _sig) in fn_refs.items():
         if func_id not in all_functions:
             continue
         func_v_offsets[func_id] = shared_v_offset
@@ -907,7 +901,7 @@ def _inline_calls(
         current_block_id = block.id
         current_params = block.params
 
-        for instr_idx, instr in enumerate(block.instrs):
+        for _instr_idx, instr in enumerate(block.instrs):
             if instr.opcode != "call" or instr.fn_ref is None:
                 current_instrs.append(instr)
                 continue
@@ -939,7 +933,7 @@ def _inline_calls(
             i32_params = [(v, t) for v, t in callee_entry.params if t == "i32"]
             call_args = instr.operands
 
-            for (param_v, _), arg_v in zip(i32_params, call_args):
+            for (param_v, _), arg_v in zip(i32_params, call_args, strict=False):
                 ci = CLIFInstr(opcode="copy", dest=param_v + v_offset)
                 ci.operands = [arg_v]
                 current_instrs.append(ci)

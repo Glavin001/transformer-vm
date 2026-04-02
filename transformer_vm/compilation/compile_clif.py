@@ -24,7 +24,7 @@ import tempfile
 
 from transformer_vm._paths import DATA_DIR, EXAMPLES_DIR, MANIFEST
 from transformer_vm.clif.parser import parse_clif_file
-from transformer_vm.clif.subset import COND_CODES, SimpleInstr, SimpleProg, subset_and_flatten
+from transformer_vm.clif.subset import SimpleInstr, SimpleProg, subset_and_flatten
 
 logger = logging.getLogger(__name__)
 
