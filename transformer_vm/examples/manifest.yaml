@@ -3,10 +3,16 @@ programs:
     args: "World"
   - name: countdown
     args: ""
+  - name: loop3
+    args: ""
+  - name: loop_n
+    args: "abc"
   - name: minmax
     args: "HELLO"
   - name: store_load
     args: "test"
+  - name: copy_buf
+    args: "AB"
   - name: reverse
     args: "abcd"
   - name: addition

@@ -15,12 +15,24 @@ import os
 import pytest
 
 # All test programs: (name, args, expected_output)
+# Progressive test programs, easiest to hardest.
+# Each program isolates specific CLIF features.
 PROGRAMS = [
+    # Level 1: constants + output
     ("hello", "World", "Hello World!\n"),
+    # Level 2: arithmetic loops (no input)
     ("countdown", "", "9876543210\n"),
+    ("loop3", "", "ABC\n"),
+    # Level 3: runtime-computed loop bounds (regression: copy_true condition bug)
+    ("loop_n", "abc", "XXX\n"),
+    # Level 4: conditional branches + smin/smax
     ("minmax", "HELLO", "EO\n"),
+    # Level 5: store8 + sload8 memory roundtrip
     ("store_load", "test", "XY\n"),
+    ("copy_buf", "AB", "AB\n"),
+    # Level 6: loops + store8 + sload8 with computed addresses
     ("reverse", "abcd", "dcba\n"),
+    # Level 7: multi-loop digit-by-digit arithmetic
     ("addition", "12345+6789", "19134\n"),
 ]
 
@@ -170,6 +182,18 @@ def test_clif_graph_evaluator_countdown(clif_data):
     assert output == "9876543210\n", f"got {output!r}"
 
 
+def test_clif_graph_evaluator_loop3(clif_data):
+    """Level 2: hardcoded while(i<3) loop."""
+    output = _run_clif_graph_evaluator(clif_data, "loop3", use_hull=True)
+    assert output == "ABC\n", f"got {output!r}"
+
+
+def test_clif_graph_evaluator_loop_n(clif_data):
+    """Level 3: runtime-computed loop bound (regression for copy_true bug)."""
+    output = _run_clif_graph_evaluator(clif_data, "loop_n", use_hull=True)
+    assert output == "XXX\n", f"got {output!r}"
+
+
 def test_clif_graph_evaluator_minmax(clif_data):
     """Level 3: CALM graph evaluator on minmax — smin/smax + conditional branches."""
     output = _run_clif_graph_evaluator(clif_data, "minmax", use_hull=True)
@@ -180,6 +204,12 @@ def test_clif_graph_evaluator_store_load(clif_data):
     """Level 4: CALM graph evaluator on store_load — store8 + sload8 roundtrip."""
     output = _run_clif_graph_evaluator(clif_data, "store_load", use_hull=True)
     assert output == "XY\n", f"got {output!r}"
+
+
+def test_clif_graph_evaluator_copy_buf(clif_data):
+    """Level 5: store8 + uload8 roundtrip (regression for i64 const offset bug)."""
+    output = _run_clif_graph_evaluator(clif_data, "copy_buf", use_hull=True)
+    assert output == "AB\n", f"got {output!r}"
 
 
 @pytest.mark.slow
