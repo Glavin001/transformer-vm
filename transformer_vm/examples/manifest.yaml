@@ -1,8 +1,28 @@
 programs:
   - name: hello
     args: "World"
+  - name: countdown
+    args: ""
+  - name: loop3
+    args: ""
+  - name: loop_n
+    args: "abc"
+  - name: minmax
+    args: "HELLO"
+  - name: store_load
+    args: "test"
+  - name: copy_buf
+    args: "AB"
+  - name: reverse
+    args: "abcd"
   - name: addition
     args: "12345+6789"
+  - name: multiply
+    args: "abc"
+  - name: sum_bytes
+    args: "AB"
+  - name: max_char
+    args: "hZa"
   - name: collatz
     args: "7"
   - name: fibonacci

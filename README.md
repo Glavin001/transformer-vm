@@ -5,8 +5,11 @@
 ![Transformer VM](assets/hero.png)
 
 A standard softmax-ReGLU transformer whose weights are computed
-**analytically** that correctly simulates a WebAssembly
-virtual machine on arbitrary programs.
+**analytically** that correctly simulates a virtual machine on arbitrary programs.
+
+Supports two IR backends:
+- **WebAssembly** (WASM) -- stack-based, the original backend
+- **Cranelift IR** (CLIF) -- SSA/register-based, explicit operands, no implicit stack
 
 **Blog posts:** [Can LLMs Be Computers?](https://www.percepta.ai/blog/can-llms-be-computers) | [Constructing the LLM Computer](https://www.percepta.ai/blog/constructing-llm-computer) *(coming soon)*
 
@@ -25,6 +28,11 @@ virtual machine on arbitrary programs.
   Alternatively, set `CLANG_PATH` to point to a specific clang binary.
 
 - **C++17 compiler** -- used to build the C++ inference engine (`clang++` on macOS, `g++` on Linux)
+- **[Wasmtime](https://wasmtime.dev/)** *(optional, for CLIF backend)* -- needed to compile WASM to Cranelift IR
+
+  ```bash
+  curl https://wasmtime.dev/install.sh -sSf | bash
+  ```
 
 ## Quick Start
 
@@ -94,6 +102,29 @@ uv run wasm-specialize transformer_vm/data/collatz.txt --save-weights=collatz.bi
 uv run wasm-run --model collatz.bin transformer_vm/data/collatz_spec.txt
 ```
 
+### Cranelift IR (CLIF) backend
+
+The CLIF backend compiles C programs through a different IR: C → WASM → Cranelift IR → transformer. CLIF is SSA-based with explicit operands (no implicit stack), making it easier for LLMs to generate.
+
+```bash
+# Compile a C program to CLIF token format
+uv run clif-compile transformer_vm/examples/hello.c --args World
+
+# Generate reference trace
+uv run clif-reference transformer_vm/data/hello_clif.txt
+
+# Run through the CLIF graph evaluator
+uv run python -c "
+from transformer_vm.clif.interpreter import CLIFMachine
+from transformer_vm.evaluator import Runtime
+pg = CLIFMachine().build()
+rt = Runtime(use_hull=False, program_graph=pg)
+# ... (see tests for full example)
+"
+```
+
+The CLIF pipeline requires [Wasmtime](https://wasmtime.dev/) for the WASM → CLIF compilation step (`wasmtime compile --emit-clif`).
+
 ## CLI Commands
 
 | Command | Description |
@@ -104,6 +135,8 @@ uv run wasm-run --model collatz.bin transformer_vm/data/collatz_spec.txt
 | `wasm-build` | Build universal transformer weights explicitly |
 | `wasm-specialize` | Bake a program into transformer weights (Futamura projection) |
 | `wasm-reference` | Generate reference token traces by executing WASM directly |
+| `clif-compile` | Compile C to CLIF token format (via WASM → Cranelift) |
+| `clif-reference` | Generate reference traces by executing CLIF directly |
 
 ## Key Concepts
 
@@ -129,6 +162,20 @@ From these primitives, two helper functions build all conditional logic:
 through the computation graph using byte-level arithmetic with carry
 propagation. The machine state (stack, memory, locals, cursor, call depth) is
 tracked via attention lookups and cumulative sums.
+
+### CLIF Machine
+
+`transformer_vm/clif/interpreter.py` encodes Cranelift IR opcodes through the
+same computation graph. Unlike the WASM interpreter (which tracks an implicit
+stack), the CLIF interpreter uses **SSA variable bindings** accessed via
+attention keyed by `(dest_v, byte_index)`. Each instruction names its operands
+explicitly, eliminating stack depth tracking.
+
+The CLIF pipeline:
+1. C → WASM binary (clang) → CLIF text (wasmtime `--emit-clif`)
+2. Subset/simplify: resolve vmctx, eliminate i64 intermediaries, flatten blocks
+3. Tokenize: 7-token instruction format (opcode + 6 data bytes)
+4. Execute: CALM graph evaluator or analytical transformer weights
 
 ### Two Execution Modes
 
@@ -172,6 +219,13 @@ graph TD
     referencePy["reference.py — Reference trace generator for correctness testing"]
   end
 
+  subgraph clifMod ["clif/"]
+    clifInterpreterPy["interpreter.py — SSA-based CLIF machine (explicit operands, no stack)"]
+    clifReferencePy["reference.py — CLIF reference interpreter and trace generator"]
+    clifParserPy["parser.py — Parse wasmtime CLIF text output"]
+    clifSubsetPy["subset.py — Simplify raw Cranelift CLIF to minimal i32 subset"]
+  end
+
   subgraph modelMod ["model/"]
     transformerPy["transformer.py — PyTorch VanillaTransformer with ReGLU FFN"]
     transformerCpp["transformer.cpp — Standalone C++ inference engine with hull attention"]
@@ -192,6 +246,7 @@ graph TD
 
   subgraph compilationMod ["compilation/"]
     compileWasm["compile_wasm.py — C/WASM to token prefix pipeline"]
+    compileClif["compile_clif.py — C → WASM → CLIF token prefix pipeline"]
     decoderPy["decoder.py — WASM MVP binary decoder"]
     lowerPy["lower.py — Lower unsupported ops: MUL, DIV, AND, OR, XOR, SHL, SHR"]
     runtimeH["runtime.h — C runtime for WASM programs, auto-injected by compiler"]
@@ -223,6 +278,7 @@ graph TD
 
   subgraph testsMod ["tests/"]
     testSmoke["test_smoke.py — End-to-end smoke tests"]
+    testClif["test_clif.py — CLIF pipeline tests: parser, reference, graph eval, cross-IR"]
     testDistill["test_distill.py — Model build + inference tests"]
     testSpecialize["test_specialize.py — First Futamura projection tests"]
     subgraph fixturesMod ["fixtures/"]
@@ -232,6 +288,7 @@ graph TD
 
   root --> graphMod
   root --> wasmMod
+  root --> clifMod
   root --> modelMod
   root --> schedulerMod
   root --> attentionMod
@@ -253,18 +310,73 @@ uv sync --extra dev
 ### Run tests
 
 ```bash
-# Fast tests only
+# Fast tests only (~50s, includes graph evaluators and CLIF pipeline)
 uv run pytest -m "not slow"
 
-# All tests (including model build/inference)
+# All tests including model build, inference, and specialization
 uv run pytest
+
+# Run only CLIF tests
+uv run pytest transformer_vm/tests/test_clif.py -v
+
+# Run only WASM tests
+uv run pytest transformer_vm/tests/test_smoke.py -v
 ```
 
 ### Lint
 
 ```bash
 uv run ruff check .
+uv run ruff format --check .
 ```
+
+### Contributing
+
+#### Adding a new interpreter backend
+
+The system is designed to support multiple IR backends. To add one:
+
+1. **Create a new package** under `transformer_vm/` (e.g., `transformer_vm/myir/`)
+2. **Implement the interpreter** in the CALM graph DSL -- create a class with a
+   `build()` method that returns a `ProgramGraph` (see `wasm/interpreter.py` or
+   `clif/interpreter.py` for examples)
+3. **Write a compilation pipeline** that converts source programs to your tokenized format
+4. **Write a reference interpreter** that executes programs directly (for test oracles)
+5. **Add tests** comparing your backend's output to native execution and the WASM backend
+
+The key insight: any interpreter expressible as an Append-Only Lookup Machine
+(using only linear combinations, ReLU gating, attention lookups, and cumulative
+sums) can be compiled into transformer weights. The downstream pipeline
+(MILP scheduling, weight construction, the transformer model) works unchanged.
+
+#### Running the CLIF pipeline manually
+
+```bash
+# 1. Compile C to CLIF tokens (requires wasmtime)
+uv run clif-compile transformer_vm/examples/hello.c --args World
+
+# 2. Generate reference trace
+uv run clif-reference transformer_vm/data/hello_clif.txt
+
+# 3. Verify reference matches WASM
+uv run python -c "
+from transformer_vm.wasm.reference import load_program, run as wasm_run
+from transformer_vm.clif.reference import load_clif_program, run as clif_run
+from transformer_vm._paths import DATA_DIR
+import os
+_, _, w = wasm_run(*load_program(os.path.join(DATA_DIR, 'hello.txt')))
+_, _, c = clif_run(*load_clif_program(os.path.join(DATA_DIR, 'hello_clif.txt')))
+assert w == c == 'Hello World!\n'
+print('WASM == CLIF == native: OK')
+"
+```
+
+#### Adding a new test program
+
+1. Write the C program in `transformer_vm/examples/` using the `compute(const char *input)` entry point and `#include` the provided `runtime.h`
+2. Add it to `transformer_vm/examples/manifest.yaml`
+3. Add parametrized test cases to the relevant test files
+4. Verify with `uv run pytest -v`
 
 ## Supported WASM Opcodes
 

@@ -21,3 +21,4 @@ transformer_vm/data/
 
 # C++ build output
 transformer
+*.cwasm
