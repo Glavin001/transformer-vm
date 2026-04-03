@@ -626,7 +626,11 @@ def generate_all(regen=False):
     from transformer_vm._paths import DATA_DIR
 
     prog_files = sorted(globmod.glob(os.path.join(DATA_DIR, "*.txt")))
-    prog_files = [f for f in prog_files if not (f.endswith("_ref.txt") or f.endswith("_spec.txt"))]
+    prog_files = [
+        f
+        for f in prog_files
+        if not (f.endswith("_ref.txt") or f.endswith("_spec.txt") or "_clif" in os.path.basename(f))
+    ]
 
     for prog_path in prog_files:
         ref_path = prog_path.replace(".txt", "_ref.txt")
