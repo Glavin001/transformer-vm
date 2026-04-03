@@ -46,6 +46,13 @@ MULTI_FUNCTION_PROGRAMS = [
     ("fibonacci", "10", "55\n"),
 ]
 
+# Complex multi-function programs (known inlining limitations — TODO #4):
+COMPLEX_PROGRAMS = [
+    ("min_cost_matching", "3 9 2 7 6 4 3 5 8 1"),
+    ("sudoku", "530070000600195000098000060800060003400803001700020006060000280000419005000080079"),
+    ("lowering_test", "12 5"),
+]
+
 
 @pytest.fixture(scope="session")
 def clif_data(data_dir):
@@ -69,6 +76,11 @@ def clif_data(data_dir):
         clif_ref = os.path.join(data_dir, f"{name}_clif_ref.txt")
         if not os.path.exists(clif_ref):
             generate_ref(clif_txt, clif_ref)
+
+    for name, args in COMPLEX_PROGRAMS:
+        clif_txt = os.path.join(data_dir, f"{name}_clif.txt")
+        if not os.path.exists(clif_txt):
+            compile_and_save(os.path.join(EXAMPLES_DIR, f"{name}.c"), args=args, name=name)
 
     return data_dir
 
@@ -276,3 +288,22 @@ def test_clif_multi_function_var_limit(clif_data, program, args, expected):
 
     prog, input_str = load_clif_program(os.path.join(clif_data, f"{program}_clif.txt"))
     assert len(prog) > 100, f"Expected >100 instructions for {program}, got {len(prog)}"
+
+
+# ── Graph evaluator: multiply (lowered imul/umulhi/ushr) ─────
+
+
+def test_clif_graph_evaluator_multiply(clif_data):
+    """Level 8: multiply with imul/umulhi/ushr lowered to loops."""
+    output = _run_clif_graph_evaluator(clif_data, "multiply", use_hull=True)
+    assert output == "21\n", f"got {output!r}"
+
+
+# ── Complex programs (compilation smoke tests) ──────────────
+
+
+@pytest.mark.parametrize("program,args", COMPLEX_PROGRAMS)
+def test_clif_complex_compiles(clif_data, program, args):
+    """Complex programs compile to CLIF without errors."""
+    clif_txt = os.path.join(clif_data, f"{program}_clif.txt")
+    assert os.path.exists(clif_txt), f"{program}_clif.txt not found"

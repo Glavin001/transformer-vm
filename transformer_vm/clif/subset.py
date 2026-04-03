@@ -747,6 +747,164 @@ def flatten_blocks(
     return result
 
 
+def _lower_complex_ops(instrs: list[SimpleInstr]) -> list[SimpleInstr]:
+    """Lower imul, umulhi+ushr (division-by-constant) to loops using basic ops.
+
+    Mirrors the WASM lowering in compilation/lower.py: imul becomes a repeated-
+    addition loop, and the umulhi(x, magic)>>shift pattern (Cranelift's
+    unsigned-division-by-constant idiom) becomes a repeated-subtraction loop.
+
+    Operates on the flattened instruction list.  Internal loop branches use
+    pre-computed PC-relative offsets; surviving original branches are remapped
+    through an old→new PC table.
+    """
+    # Collect iconst values for constant propagation
+    const_vals: dict[int, int] = {}
+    for instr in instrs:
+        if instr.opcode == "iconst" and instr.dest is not None:
+            const_vals[instr.dest] = instr.imm
+
+    # Find highest variable number in use
+    max_var = max(
+        (v for instr in instrs
+         for v in (instr.dest, instr.src1, instr.src2, instr.src3)
+         if v is not None),
+        default=0,
+    )
+
+    # ── Pattern detection ────────────────────────────────────────
+    skip: set[int] = set()          # PCs already claimed by a pattern
+    plan: dict[int, tuple[set[int], list[SimpleInstr]]] = {}
+
+    for i, instr in enumerate(instrs):
+        if i in skip:
+            continue
+
+        # Pattern: umulhi dest, src, magic_const  ...  ushr q, dest, shift_const
+        # → unsigned division loop  q = src / D
+        if instr.opcode == "umulhi":
+            magic = const_vals.get(instr.src2)
+            if magic is None:
+                continue
+            for j in range(i + 1, min(i + 8, len(instrs))):
+                if j in skip:
+                    continue
+                jj = instrs[j]
+                if jj.opcode == "ushr" and jj.src1 == instr.dest:
+                    shift = const_vals.get(jj.src2)
+                    if shift is not None:
+                        divisor = round((1 << (32 + shift)) / magic)
+                        if divisor < 1:
+                            divisor = 1
+                        src = instr.src1
+                        dest = jj.dest
+
+                        max_var += 1; v_q = max_var
+                        max_var += 1; v_a = max_var
+                        max_var += 1; v_div = max_var
+                        max_var += 1; v_done = max_var
+                        max_var += 1; v_one = max_var
+
+                        # Division loop: q=0; a=src; while a>=div: a-=div; q++
+                        # Division loop: q=0; a=src; while a>=div: a-=div; q++; dest=q
+                        # brif at +5 exits to +10: offset = 10-(5+1) = 4
+                        # jump at +9 loops to +4: offset = 4-(9+1) = -6
+                        loop = [
+                            SimpleInstr(opcode="iconst", dest=v_q, imm=0),                       # +0
+                            SimpleInstr(opcode="copy", dest=v_a, src1=src),                       # +1
+                            SimpleInstr(opcode="iconst", dest=v_div, imm=divisor),                # +2
+                            SimpleInstr(opcode="iconst", dest=v_one, imm=1),                      # +3
+                            SimpleInstr(opcode="icmp", dest=v_done, src1=v_a, src2=v_div, cond=6),  # +4 ult
+                            SimpleInstr(opcode="brif", src1=v_done, imm=4),                       # +5 → +10
+                            SimpleInstr(opcode="jump", imm=0),                                    # +6 → +7
+                            SimpleInstr(opcode="isub", dest=v_a, src1=v_a, src2=v_div),           # +7
+                            SimpleInstr(opcode="iadd", dest=v_q, src1=v_q, src2=v_one),           # +8
+                            SimpleInstr(opcode="jump", imm=-6),                                   # +9 → +4
+                            SimpleInstr(opcode="copy", dest=dest, src1=v_q),                      # +10
+                        ]
+                        plan[i] = ({i, j}, loop)
+                        skip.add(i)
+                        skip.add(j)
+                        break
+
+        # Pattern: imul dest, src1, src2  → repeated-addition loop
+        elif instr.opcode == "imul":
+            dest = instr.dest
+            src1 = instr.src1
+            src2 = instr.src2
+
+            max_var += 1; v_result = max_var
+            max_var += 1; v_counter = max_var
+            max_var += 1; v_zero = max_var
+            max_var += 1; v_one = max_var
+            max_var += 1; v_done = max_var
+
+            # Multiply loop: result=0; counter=b; while counter!=0: result+=a; counter--
+            # brif at +5 exits to +10: offset = 10-(5+1) = 4
+            # jump at +9 loops to +4: offset = 4-(9+1) = -6
+            loop = [
+                SimpleInstr(opcode="iconst", dest=v_result, imm=0),                            # +0
+                SimpleInstr(opcode="copy", dest=v_counter, src1=src2),                         # +1
+                SimpleInstr(opcode="iconst", dest=v_zero, imm=0),                              # +2
+                SimpleInstr(opcode="iconst", dest=v_one, imm=1),                               # +3
+                SimpleInstr(opcode="icmp", dest=v_done, src1=v_counter, src2=v_zero, cond=0),  # +4 eq
+                SimpleInstr(opcode="brif", src1=v_done, imm=4),                                # +5 → +10
+                SimpleInstr(opcode="jump", imm=0),                                             # +6 → +7
+                SimpleInstr(opcode="iadd", dest=v_result, src1=v_result, src2=src1),            # +7
+                SimpleInstr(opcode="isub", dest=v_counter, src1=v_counter, src2=v_one),         # +8
+                SimpleInstr(opcode="jump", imm=-6),                                            # +9 → +4
+                SimpleInstr(opcode="copy", dest=dest, src1=v_result),                          # +10
+            ]
+            plan[i] = ({i}, loop)
+            skip.add(i)
+
+    if not plan:
+        return instrs
+
+    # ── Build new instruction list with old→new PC mapping ───────
+    all_remove: set[int] = set()
+    for pcs, _ in plan.values():
+        all_remove.update(pcs)
+
+    new_instrs: list[SimpleInstr] = []
+    old_to_new: dict[int, int] = {}
+    replacement_pcs: set[int] = set()        # new-PCs that belong to loops
+
+    for old_pc in range(len(instrs)):
+        old_to_new[old_pc] = len(new_instrs)
+        if old_pc in plan:
+            start = len(new_instrs)
+            _, loop_instrs = plan[old_pc]
+            new_instrs.extend(loop_instrs)
+            replacement_pcs.update(range(start, len(new_instrs)))
+            continue
+        if old_pc in all_remove:
+            continue
+        new_instrs.append(instrs[old_pc])
+
+    old_to_new[len(instrs)] = len(new_instrs)
+
+    # ── Fix branch offsets for original (non-loop) instructions ──
+    # Build reverse map: new_pc → old_pc for surviving original instrs
+    new_to_old: dict[int, int] = {}
+    for old_pc, new_pc in old_to_new.items():
+        if old_pc < len(instrs) and old_pc not in all_remove:
+            new_to_old[new_pc] = old_pc
+
+    for new_pc, instr in enumerate(new_instrs):
+        if new_pc in replacement_pcs:
+            continue
+        if instr.opcode in ("brif", "jump"):
+            old_pc = new_to_old.get(new_pc)
+            if old_pc is not None:
+                old_target = old_pc + 1 + instr.imm
+                new_target = old_to_new.get(old_target, old_to_new[len(instrs)])
+                instr.imm = new_target - (new_pc + 1)
+
+    logger.info("Lowered %d complex ops (imul/umulhi+ushr)", len(plan))
+    return new_instrs
+
+
 def _eliminate_dead_vars(instrs: list[SimpleInstr]) -> list[SimpleInstr]:
     """Remove instructions that write to variables never read by any other instruction.
 
@@ -1095,6 +1253,9 @@ def subset_and_flatten(
 
     # Flatten to linear instruction list
     flat_instrs = flatten_blocks(compute_blocks, func_name=compute_func.name)
+
+    # Lower complex ops (imul, umulhi+ushr) to loops before further processing
+    flat_instrs = _lower_complex_ops(flat_instrs)
 
     # Prepend initialization for function parameters that are used but not defined
     # The i32 parameter (input pointer) needs to be initialized with input_base
