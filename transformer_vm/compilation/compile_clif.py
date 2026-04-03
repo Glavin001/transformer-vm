@@ -24,7 +24,7 @@ import tempfile
 
 from transformer_vm._paths import DATA_DIR, EXAMPLES_DIR, MANIFEST
 from transformer_vm.clif.parser import parse_clif_file
-from transformer_vm.clif.subset import COND_CODES, SimpleInstr, SimpleProg, subset_and_flatten
+from transformer_vm.clif.subset import SimpleInstr, SimpleProg, subset_and_flatten
 
 logger = logging.getLogger(__name__)
 
@@ -208,11 +208,7 @@ def _encode_instr(instr: SimpleInstr) -> list[int]:
         return [v(instr.dest), lo(imm), hi(imm), (imm >> 16) & 0xFF, (imm >> 24) & 0xFF, 0]
 
     if op in ("iadd", "isub", "imul", "band", "bor", "bxor", "ishl", "ushr", "sshr"):
-        if instr.src2 is not None:
-            return [v(instr.dest), v(instr.src1), v(instr.src2), 0, 0, 0]
-        # Immediate form
-        imm = instr.imm & MASK32
-        return [v(instr.dest), v(instr.src1), lo(imm), hi(imm), (imm >> 16) & 0xFF, (imm >> 24) & 0xFF]
+        return [v(instr.dest), v(instr.src1), v(instr.src2), 0, 0, 0]
 
     if op == "icmp":
         return [v(instr.dest), v(instr.src1), v(instr.src2), instr.cond & 0xFF, 0, 0]
@@ -251,10 +247,7 @@ def _encode_instr(instr: SimpleInstr) -> list[int]:
         return [v(instr.dest), v(instr.src1), 0, 0, 0, 0]
 
     if op in ("umulhi", "smin", "smax"):
-        if instr.src2 is not None:
-            return [v(instr.dest), v(instr.src1), v(instr.src2), 0, 0, 0]
-        imm = instr.imm & MASK32
-        return [v(instr.dest), v(instr.src1), lo(imm), hi(imm), (imm >> 16) & 0xFF, (imm >> 24) & 0xFF]
+        return [v(instr.dest), v(instr.src1), v(instr.src2), 0, 0, 0]
 
     if op == "input_base":
         # f0=0(no dest), f1:f4=immediate (same layout as iconst for immediate field)

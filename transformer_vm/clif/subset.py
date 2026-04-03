@@ -75,9 +75,8 @@ def _find_heap_base(func: CLIFFunction) -> int | None:
     """
     for block in func.blocks:
         for instr in block.instrs:
-            if instr.opcode == "load" and instr.type == "i64":
-                if instr.offset == 56 and 0 in instr.operands:
-                    return instr.dest
+            if instr.opcode == "load" and instr.type == "i64" and instr.offset == 56 and 0 in instr.operands:
+                return instr.dest
     return None
 
 
@@ -88,9 +87,8 @@ def _find_stack_ptr(func: CLIFFunction) -> int | None:
     """
     for block in func.blocks:
         for instr in block.instrs:
-            if instr.opcode == "load" and instr.type == "i32":
-                if instr.offset == 96 and 0 in instr.operands:
-                    return instr.dest
+            if instr.opcode == "load" and instr.type == "i32" and instr.offset == 96 and 0 in instr.operands:
+                return instr.dest
     return None
 
 
@@ -285,6 +283,7 @@ def _subset_function(func: CLIFFunction) -> tuple[list[CLIFBlock], dict[int, int
 
 
 _STACK_PTR_ADDR = 4  # Fixed memory address for the stack pointer variable
+_IMM_TEMP_VAR = 59999  # Shared temp variable for materialized ALU immediates (renumbered later)
 
 
 def _simplify_instr(
@@ -306,8 +305,7 @@ def _simplify_instr(
     # Stack pointer operations: load/store with 'table' flag at vmctx+96
     # The stack pointer is a WASM global stored in vmctx. After vmctx
     # elimination, we redirect these to a fixed memory address.
-    if instr.opcode == "load" and "table" in instr.flags:
-        if instr.operands and instr.operands[0] in vmctx:
+    if instr.opcode == "load" and "table" in instr.flags and instr.operands and instr.operands[0] in vmctx:
             # load sp from fixed address: load dest, addr=0, offset=_STACK_PTR_ADDR
             # After flattening: SimpleInstr(load, dest=X, src1=None, imm=_STACK_PTR_ADDR)
             # Reference interpreter: addr = vars_[src1](=0) + offset = 0 + 4 = 4
@@ -315,8 +313,7 @@ def _simplify_instr(
             r.offset = _STACK_PTR_ADDR
             return r
 
-    if instr.opcode == "store" and "table" in instr.flags:
-        if instr.operands and instr.operands[-1] in vmctx:
+    if instr.opcode == "store" and "table" in instr.flags and instr.operands and instr.operands[-1] in vmctx:
             # store sp to fixed address
             val_v = resolve(instr.operands[0])
             r = CLIFInstr(opcode="store_sp", type="i32")
@@ -534,8 +531,19 @@ def flatten_blocks(
                 for _bid, args in instr.targets:
                     target_block = block_map.get(_bid)
                     if target_block and target_block.params and args:
-                        size += min(len(args), len(target_block.params))
+                        for (pv, _pt), av in zip(target_block.params, args, strict=False):
+                            if pv != av:  # Match pass-2 identity-copy skip
+                                size += 1
                 size += 1
+            elif instr.opcode in ("iadd", "isub", "imul", "band", "bor", "bxor",
+                                   "ishl", "ushr", "sshr", "smin", "smax"):
+                ops = instr.operands
+                imms = instr.immediates
+                s2 = ops[1] if len(ops) > 1 else None
+                if s2 is None and imms:
+                    size += 2  # iconst tmp + ALU reg-reg
+                else:
+                    size += 1
             else:
                 size += 1
         block_sizes[block.id] = size
@@ -546,8 +554,6 @@ def flatten_blocks(
     for block in blocks:
         block_offsets[block.id] = offset
         offset += block_sizes[block.id]
-
-    total_instrs = offset
 
     # Pass 2: emit instructions
     result: list[SimpleInstr] = []
@@ -567,12 +573,15 @@ def flatten_blocks(
                 s1 = ops[0] if len(ops) > 0 else None
                 s2 = ops[1] if len(ops) > 1 else None
                 imm = imms[0] if imms else 0
-                # If only one operand + immediate, use immediate as src2
                 if s2 is None and imms:
-                    result.append(SimpleInstr(opcode=instr.opcode, dest=instr.dest, src1=s1, imm=imm & MASK32))
+                    # Materialize immediate as iconst + reg-reg ALU
+                    # Reuse a single temp var (consumed immediately, no conflict)
+                    result.append(SimpleInstr(opcode="iconst", dest=_IMM_TEMP_VAR, imm=imm & MASK32))
+                    result.append(SimpleInstr(opcode=instr.opcode, dest=instr.dest, src1=s1, src2=_IMM_TEMP_VAR))
+                    current_pc += 2
                 else:
-                    result.append(SimpleInstr(opcode=instr.opcode, dest=instr.dest, src1=s1, src2=s2, imm=imm & MASK32))
-                current_pc += 1
+                    result.append(SimpleInstr(opcode=instr.opcode, dest=instr.dest, src1=s1, src2=s2))
+                    current_pc += 1
 
             elif instr.opcode == "ineg":
                 result.append(SimpleInstr(opcode="ineg", dest=instr.dest, src1=instr.operands[0] if instr.operands else None))
@@ -590,10 +599,13 @@ def flatten_blocks(
                 s2 = ops[1] if len(ops) > 1 else None
                 imm = imms[0] if imms else 0
                 if s2 is None and imms:
-                    result.append(SimpleInstr(opcode=instr.opcode, dest=instr.dest, src1=s1, imm=imm & MASK32))
+                    # Materialize immediate as iconst + reg-reg
+                    result.append(SimpleInstr(opcode="iconst", dest=_IMM_TEMP_VAR, imm=imm & MASK32))
+                    result.append(SimpleInstr(opcode=instr.opcode, dest=instr.dest, src1=s1, src2=_IMM_TEMP_VAR))
+                    current_pc += 2
                 else:
                     result.append(SimpleInstr(opcode=instr.opcode, dest=instr.dest, src1=s1, src2=s2))
-                current_pc += 1
+                    current_pc += 1
 
             elif instr.opcode == "icmp":
                 ops = instr.operands
@@ -691,13 +703,13 @@ def flatten_blocks(
 
                 # Emit copies for true branch params (conditional on cond_v)
                 if true_block and true_block.params and true_args:
-                    for (param_v, _ptype), arg_v in zip(true_block.params, true_args):
+                    for (param_v, _ptype), arg_v in zip(true_block.params, true_args, strict=False):
                         result.append(SimpleInstr(opcode="copy_true", dest=param_v, src1=arg_v, src2=cond_v))
                         current_pc += 1
 
                 # Emit copies for false branch params (conditional on !cond_v)
                 if false_block and false_block.params and false_args:
-                    for (param_v, _ptype), arg_v in zip(false_block.params, false_args):
+                    for (param_v, _ptype), arg_v in zip(false_block.params, false_args, strict=False):
                         result.append(SimpleInstr(opcode="copy_false", dest=param_v, src1=arg_v, src2=cond_v))
                         current_pc += 1
 
@@ -718,7 +730,7 @@ def flatten_blocks(
 
                 # Emit copies for target block params
                 if target_block and target_block.params and target_args:
-                    for (param_v, _ptype), arg_v in zip(target_block.params, target_args):
+                    for (param_v, _ptype), arg_v in zip(target_block.params, target_args, strict=False):
                         if param_v != arg_v:  # Skip identity copies
                             result.append(SimpleInstr(opcode="copy", dest=param_v, src1=arg_v))
                             current_pc += 1
@@ -733,6 +745,67 @@ def flatten_blocks(
                 current_pc += 1
 
     return result
+
+
+def _eliminate_dead_vars(instrs: list[SimpleInstr]) -> list[SimpleInstr]:
+    """Remove instructions that write to variables never read by any other instruction.
+
+    Iterates until no more dead writes are found. Only removes side-effect-free instructions.
+    Branch offsets are recomputed after removal.
+    """
+    _SIDE_EFFECT_FREE = {
+        "iconst", "iadd", "isub", "imul", "band", "bor", "bxor",
+        "ishl", "ushr", "sshr", "icmp", "select", "copy", "copy_true",
+        "copy_false", "ineg", "umulhi", "smin", "smax", "sextend8",
+        "load", "uload8", "sload8", "uload16", "sload16",
+    }
+
+    changed = True
+    while changed:
+        changed = False
+        # Collect all read variables
+        read_vars: set[int] = set()
+        for instr in instrs:
+            for v in (instr.src1, instr.src2, instr.src3):
+                if v is not None:
+                    read_vars.add(v)
+
+        # Find dead writes
+        dead_indices: set[int] = set()
+        for i, instr in enumerate(instrs):
+            if (instr.dest is not None
+                    and instr.dest not in read_vars
+                    and instr.opcode in _SIDE_EFFECT_FREE):
+                dead_indices.add(i)
+
+        if not dead_indices:
+            break
+        changed = True
+
+        # Build old-to-new PC mapping for branch fixup
+        new_instrs: list[SimpleInstr] = []
+        old_to_new: dict[int, int] = {}
+        new_to_old: dict[int, int] = {}  # reverse mapping for surviving instrs
+        new_pc = 0
+        for old_pc, instr in enumerate(instrs):
+            old_to_new[old_pc] = new_pc
+            if old_pc not in dead_indices:
+                new_to_old[new_pc] = old_pc
+                new_instrs.append(instr)
+                new_pc += 1
+        old_to_new[len(instrs)] = new_pc  # sentinel
+
+        # Fix branch offsets
+        for new_i, instr in enumerate(new_instrs):
+            if instr.opcode in ("brif", "jump"):
+                old_pc = new_to_old[new_i]
+                old_target = old_pc + 1 + instr.imm
+                new_target = old_to_new.get(old_target, new_pc)
+                instr.imm = new_target - (new_i + 1)
+
+        instrs = new_instrs
+
+    return instrs
 
 
 def _renumber_vars(instrs: list[SimpleInstr]) -> tuple[list[SimpleInstr], int]:
@@ -790,6 +863,12 @@ def _inline_calls(
     3. The callee's blocks appended to the function (remapped ids + v-numbers)
     4. Callee's return replaced with jump to a continuation block
     5. A continuation block where execution resumes after the call
+
+    Variable offsets are reused per callee function: multiple calls to the
+    same function share the same v-number remapping.  This keeps the total
+    variable count low enough for the 1-byte encoding (max 256 variables).
+    Block IDs remain unique per call site since all blocks coexist in the
+    flattened function.
     """
     # Find max v-number and block id across all main blocks
     max_v = 0
@@ -807,13 +886,22 @@ def _inline_calls(
 
     output_blocks = []
 
+    # All callee functions share a single v_offset since calls are sequential
+    # and never overlap. Use the same variable space for all callees.
+    shared_v_offset = max_v + 1
+    func_v_offsets: dict[str, int] = {}
+    for _fn_name, (func_id, _sig) in fn_refs.items():
+        if func_id not in all_functions:
+            continue
+        func_v_offsets[func_id] = shared_v_offset
+
     for block in main_blocks:
         # Split block at each call site
         current_instrs = []
         current_block_id = block.id
         current_params = block.params
 
-        for instr_idx, instr in enumerate(block.instrs):
+        for _instr_idx, instr in enumerate(block.instrs):
             if instr.opcode != "call" or instr.fn_ref is None:
                 current_instrs.append(instr)
                 continue
@@ -829,10 +917,10 @@ def _inline_calls(
                 current_instrs.append(instr)
                 continue
 
-            # Allocate ids for this inline site
-            v_offset = max_v + 1
+            # Reuse the pre-allocated v_offset for this callee function;
+            # allocate a fresh block_offset per call site.
+            v_offset = func_v_offsets[func_id]
             block_offset = max_block + 1
-            # cont_block_id must be higher than all remapped callee block IDs
             max_callee_block = max(cb.id for cb in callee_blocks)
             cont_block_id = block_offset + max_callee_block + 1
 
@@ -845,7 +933,7 @@ def _inline_calls(
             i32_params = [(v, t) for v, t in callee_entry.params if t == "i32"]
             call_args = instr.operands
 
-            for (param_v, _), arg_v in zip(i32_params, call_args):
+            for (param_v, _), arg_v in zip(i32_params, call_args, strict=False):
                 ci = CLIFInstr(opcode="copy", dest=param_v + v_offset)
                 ci.operands = [arg_v]
                 current_instrs.append(ci)
@@ -892,17 +980,9 @@ def _inline_calls(
                     instrs=new_instrs,
                 ))
 
-            # Update max for next call site
+            # Only advance max_block (block IDs must be unique per call site)
             for cb in callee_blocks:
                 max_block = max(max_block, cb.id + block_offset)
-                for v, _ in cb.params:
-                    max_v = max(max_v, v + v_offset)
-                for ci in cb.instrs:
-                    if ci.dest is not None:
-                        max_v = max(max_v, ci.dest + v_offset)
-                    for v in ci.operands:
-                        if v is not None:
-                            max_v = max(max_v, v + v_offset)
             max_block = cont_block_id
 
             # Start a new continuation block for remaining instructions
@@ -916,6 +996,54 @@ def _inline_calls(
         ))
 
     return output_blocks
+
+
+def _renumber_block_vars(blocks: list[CLIFBlock]) -> list[CLIFBlock]:
+    """Renumber variables in a list of CLIFBlocks to be contiguous starting from 0."""
+    # Collect all variable numbers
+    used: set[int] = set()
+    for block in blocks:
+        for v, _ in block.params:
+            used.add(v)
+        for instr in block.instrs:
+            if instr.dest is not None:
+                used.add(instr.dest)
+            for v in instr.operands:
+                if v is not None:
+                    used.add(v)
+    if not used:
+        return blocks
+
+    sorted_vars = sorted(used)
+    var_map = {old: new for new, old in enumerate(sorted_vars)}
+
+    def remap(v):
+        return var_map[v] if v is not None else None
+
+    result = []
+    for block in blocks:
+        new_params = [(var_map.get(v, v), t) for v, t in block.params]
+        new_instrs = []
+        for instr in block.instrs:
+            ni = CLIFInstr(
+                opcode=instr.opcode,
+                dest=remap(instr.dest),
+                type=instr.type,
+                operands=[remap(v) for v in instr.operands],
+                immediates=list(instr.immediates),
+                cond=instr.cond,
+                targets=[
+                    (bid, [remap(a) for a in args])
+                    for bid, args in instr.targets
+                ],
+                flags=list(instr.flags),
+                sig_ref=instr.sig_ref,
+                fn_ref=instr.fn_ref,
+                offset=instr.offset,
+            )
+            new_instrs.append(ni)
+        result.append(CLIFBlock(id=block.id, params=new_params, instrs=new_instrs))
+    return result
 
 
 def subset_and_flatten(
@@ -942,10 +1070,13 @@ def subset_and_flatten(
     if compute_func is None:
         return SimpleProg()
 
-    # Subset ALL functions
+    # Subset ALL functions and renumber callee variables to minimize v_offset space
     all_subsetted = {}
     for func_id, func in func_map.items():
         blocks, _, _ = _subset_function(func)
+        # Renumber callee functions' variables to be contiguous starting from 0
+        if func_id != (compute_func.func_id if compute_func else None):
+            blocks = _renumber_block_vars(blocks)
         all_subsetted[func_id] = blocks
 
     # Inline calls in the compute function
@@ -1029,6 +1160,9 @@ def subset_and_flatten(
     for i, instr in enumerate(flat_instrs):
         if instr.opcode == "return":
             flat_instrs[i] = SimpleInstr(opcode="halt")
+
+    # Eliminate dead variables to reduce variable count
+    flat_instrs = _eliminate_dead_vars(flat_instrs)
 
     # Renumber variables
     flat_instrs, max_var = _renumber_vars(flat_instrs)

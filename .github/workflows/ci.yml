@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
 
 jobs:
   lint:
@@ -36,6 +35,8 @@ jobs:
           brew install llvm lld
           echo "$(brew --prefix llvm)/bin" >> $GITHUB_PATH
           echo "$(brew --prefix lld)/bin" >> $GITHUB_PATH
+      - name: Install wasmtime
+        run: curl https://wasmtime.dev/install.sh -sSf | bash && echo "$HOME/.wasmtime/bin" >> $GITHUB_PATH
       - run: uv sync --extra dev
       - run: uv run pytest -m "not slow" --tb=short
 
@@ -58,5 +59,7 @@ jobs:
           brew install llvm lld
           echo "$(brew --prefix llvm)/bin" >> $GITHUB_PATH
           echo "$(brew --prefix lld)/bin" >> $GITHUB_PATH
+      - name: Install wasmtime
+        run: curl https://wasmtime.dev/install.sh -sSf | bash && echo "$HOME/.wasmtime/bin" >> $GITHUB_PATH
       - run: uv sync --extra dev
       - run: uv run pytest -m "slow" --tb=short
