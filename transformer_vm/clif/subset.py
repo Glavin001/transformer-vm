@@ -799,13 +799,17 @@ def _lower_complex_ops(instrs: list[SimpleInstr]) -> list[SimpleInstr]:
                         src = instr.src1
                         dest = jj.dest
 
-                        max_var += 1; v_q = max_var
-                        max_var += 1; v_a = max_var
-                        max_var += 1; v_div = max_var
-                        max_var += 1; v_done = max_var
-                        max_var += 1; v_one = max_var
+                        max_var += 1
+                        v_q = max_var
+                        max_var += 1
+                        v_a = max_var
+                        max_var += 1
+                        v_div = max_var
+                        max_var += 1
+                        v_done = max_var
+                        max_var += 1
+                        v_one = max_var
 
-                        # Division loop: q=0; a=src; while a>=div: a-=div; q++
                         # Division loop: q=0; a=src; while a>=div: a-=div; q++; dest=q
                         # brif at +5 exits to +10: offset = 10-(5+1) = 4
                         # jump at +9 loops to +4: offset = 4-(9+1) = -6
@@ -833,11 +837,16 @@ def _lower_complex_ops(instrs: list[SimpleInstr]) -> list[SimpleInstr]:
             src1 = instr.src1
             src2 = instr.src2
 
-            max_var += 1; v_result = max_var
-            max_var += 1; v_counter = max_var
-            max_var += 1; v_zero = max_var
-            max_var += 1; v_one = max_var
-            max_var += 1; v_done = max_var
+            max_var += 1
+            v_result = max_var
+            max_var += 1
+            v_counter = max_var
+            max_var += 1
+            v_zero = max_var
+            max_var += 1
+            v_one = max_var
+            max_var += 1
+            v_done = max_var
 
             # Multiply loop: result=0; counter=b; while counter!=0: result+=a; counter--
             # brif at +5 exits to +10: offset = 10-(5+1) = 4
